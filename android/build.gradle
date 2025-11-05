@@ -1,0 +1,190 @@
+// Gradle build file for keycard-qt Android NFC Java classes
+// This builds a JAR file containing the Android NFC helper classes
+// The JAR is self-contained and can be included in any Android app using keycard-qt
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'im.status.keycard'
+version = '0.1.0'
+
+// Java compatibility
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+// Android SDK location
+// This will be set by CMake or can use ANDROID_SDK_ROOT environment variable
+def androidHome = System.env.ANDROID_HOME ?: System.env.ANDROID_SDK_ROOT
+if (androidHome == null) {
+    throw new GradleException("ANDROID_HOME or ANDROID_SDK_ROOT must be set")
+}
+
+// Android platform version (API level 21+ for NFC)
+// Use API 35 which is available in our build environment
+def androidPlatform = 'android-35'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Android SDK stubs (for compilation only)
+    compileOnly files("${androidHome}/platforms/${androidPlatform}/android.jar")
+}
+
+// Source directories
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+    }
+}
+
+// Build JAR with proper naming
+jar {
+    archiveBaseName = 'keycard-qt-nfc'
+    archiveVersion = project.version
+    
+    manifest {
+        attributes(
+            'Implementation-Title': 'Keycard Qt NFC Support',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'Status.im',
+            'Built-By': System.getProperty('user.name'),
+            'Built-Date': new Date().format('yyyy-MM-dd HH:mm:ss')
+        )
+    }
+}
+
+// Create sources JAR for Maven publishing
+task sourcesJar(type: Jar) {
+    from sourceSets.main.allSource
+    archiveClassifier = 'sources'
+}
+
+// Create Javadoc JAR for Maven publishing
+task javadocJar(type: Jar) {
+    from javadoc
+    archiveClassifier = 'javadoc'
+}
+
+// Maven publishing configuration
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = project.group
+            artifactId = 'keycard-qt-nfc'
+            version = project.version
+            
+            from components.java
+            artifact sourcesJar
+            artifact javadocJar
+            
+            pom {
+                name = 'Keycard Qt NFC Support'
+                description = 'Android NFC helper classes for keycard-qt library'
+                url = 'https://github.com/status-im/keycard-qt'
+                
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+                
+                developers {
+                    developer {
+                        id = 'status-im'
+                        name = 'Status.im'
+                        email = 'support@status.im'
+                    }
+                }
+                
+                scm {
+                    connection = 'scm:git:git://github.com/status-im/keycard-qt.git'
+                    developerConnection = 'scm:git:ssh://github.com:status-im/keycard-qt.git'
+                    url = 'https://github.com/status-im/keycard-qt'
+                }
+            }
+        }
+    }
+    
+    repositories {
+        // Local Maven repository for testing
+        maven {
+            name = 'Local'
+            url = uri("${buildDir}/repo")
+        }
+        
+        // Uncomment and configure for publishing to Maven Central
+        // maven {
+        //     name = 'MavenCentral'
+        //     def releasesRepoUrl = 'https://oss.sonatype.org/service/local/staging/deploy/maven2/'
+        //     def snapshotsRepoUrl = 'https://oss.sonatype.org/content/repositories/snapshots/'
+        //     url = version.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+        //     credentials {
+        //         username = project.findProperty('ossrhUsername') ?: System.getenv('OSSRH_USERNAME')
+        //         password = project.findProperty('ossrhPassword') ?: System.getenv('OSSRH_PASSWORD')
+        //     }
+        // }
+        
+        // Or publish to GitHub Packages
+        // maven {
+        //     name = 'GitHubPackages'
+        //     url = uri('https://maven.pkg.github.com/status-im/keycard-qt')
+        //     credentials {
+        //         username = project.findProperty('gpr.user') ?: System.getenv('GITHUB_ACTOR')
+        //         password = project.findProperty('gpr.token') ?: System.getenv('GITHUB_TOKEN')
+        //     }
+        // }
+    }
+}
+
+// Task to display build info
+task buildInfo {
+    doLast {
+        println "Building keycard-qt NFC JAR"
+        println "  Group: ${project.group}"
+        println "  Artifact: keycard-qt-nfc"
+        println "  Version: ${project.version}"
+        println "  Android Home: ${androidHome}"
+        println "  Android Platform: ${androidPlatform}"
+        println "  Output: ${buildDir}/libs/keycard-qt-nfc-${project.version}.jar"
+        println ""
+        println "To publish to local Maven repository:"
+        println "  ./gradlew publishToMavenLocal"
+        println ""
+        println "To publish to local build repo:"
+        println "  ./gradlew publishMavenPublicationToLocalRepository"
+        println ""
+        println "Then consumers can use:"
+        println "  implementation '${project.group}:keycard-qt-nfc:${project.version}'"
+    }
+}
+
+build.dependsOn buildInfo
+
+// Convenience task: Publish to local Maven (~/.m2/repository)
+task publishLocal {
+    dependsOn publishToMavenLocal
+    doLast {
+        def localRepo = "${System.getProperty('user.home')}/.m2/repository"
+        def artifactPath = "${project.group.replace('.', '/')}/keycard-qt-nfc/${project.version}"
+        println ""
+        println "✅ Published to local Maven repository!"
+        println "   Location: ${localRepo}/${artifactPath}"
+        println ""
+        println "Consumers can now add to their build.gradle:"
+        println "   repositories {"
+        println "       mavenLocal()"
+        println "   }"
+        println "   dependencies {"
+        println "       implementation '${project.group}:keycard-qt-nfc:${project.version}'"
+        println "   }"
+    }
+}
