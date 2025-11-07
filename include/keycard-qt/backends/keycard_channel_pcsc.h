@@ -4,9 +4,11 @@
 #pragma once
 
 #include "keycard_channel_backend.h"
-#include <QTimer>
+#include <QThread>
 #include <QString>
 #include <QStringList>
+#include <QAtomicInt>
+#include <QMutex>
 
 namespace Keycard {
 
@@ -20,7 +22,8 @@ struct PcscState;
  * standard, used on desktop platforms (Windows, macOS, Linux).
  * 
  * Features:
- * - Automatic reader detection and polling
+ * - Event-driven card detection (matches status-keycard-go)
+ * - Uses SCardGetStatusChange() for efficient monitoring
  * - T=1 protocol support
  * - APDU transmission with proper error handling
  * 
@@ -45,11 +48,12 @@ public:
     QString backendName() const override { return "PC/SC"; }
     void setPollingInterval(int intervalMs) override;
 
-private slots:
+public slots:
     /**
-     * @brief Poll for cards in available readers (called by timer)
+     * @brief Force immediate re-scan for cards (used after init/factory reset)
+     * Matches status-keycard-go's forceScan mechanism
      */
-    void checkForCards();
+    void forceScan();
 
 private:
     /**
@@ -85,16 +89,36 @@ private:
      * @return ATR bytes
      */
     QByteArray getATR();
+    
+    /**
+     * @brief Event-driven detection loop (runs in separate thread)
+     * Matches status-keycard-go's waitForCard pattern
+     */
+    void detectionLoop();
+    
+    /**
+     * @brief Watch for card removal (Phase 2 of two-phase detection)
+     * Monitors specific reader until card is removed or force scan requested
+     * @param readerName Name of reader to watch
+     */
+    void watchCardRemoval(const QString& readerName);
 
     // PC/SC state (hidden via pimpl to avoid MOC issues with PC/SC types)
     PcscState* m_pcscState;
     bool m_connected;
 
-    // Card detection
-    QTimer* m_pollTimer;
-    int m_pollingInterval;
+    // Event-driven card detection
+    QThread* m_detectionThread;
+    QAtomicInt m_stopDetection;
+    QAtomicInt m_forceScan;  // Trigger for force scan (matches status-keycard-go)
     QString m_lastDetectedReader;
+    QString m_lastDetectedUid;  // Track to prevent duplicate events
     QByteArray m_lastATR;
+    bool m_lastReaderAvailable;  // Track reader availability changes
+    bool m_firstReaderCheck;     // Track if we've done initial reader check
+    
+    // Thread safety - protects transmit() to prevent APDU corruption
+    mutable QMutex m_transmitMutex;
 };
 
 } // namespace Keycard

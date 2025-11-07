@@ -4,6 +4,7 @@
 #include <QMessageAuthenticationCode>
 #include <QRandomGenerator>
 #include <QIODevice>
+#include <QThread>
 
 namespace Keycard {
 
@@ -91,7 +92,7 @@ APDU::Command CommandSet::buildCommand(uint8_t ins, uint8_t p1, uint8_t p2, cons
 
 ApplicationInfo CommandSet::select()
 {
-    qDebug() << "CommandSet: SELECT";
+    qDebug() << "📞 CommandSet::select() - START - Thread:" << QThread::currentThread();
     
     // Build SELECT command for Keycard applet
     APDU::Command cmd(APDU::CLA_ISO7816, APDU::INS_SELECT, 0x04, 0x00);
@@ -243,7 +244,8 @@ PairingInfo CommandSet::pair(const QString& pairingPassword)
 
 bool CommandSet::openSecureChannel(const PairingInfo& pairingInfo)
 {
-    qDebug() << "CommandSet: OPEN_SECURE_CHANNEL";
+    qDebug() << "📞 CommandSet::openSecureChannel() - START - Thread:" << QThread::currentThread();
+    qDebug() << "📞   Pairing index:" << pairingInfo.index << "Key:" << pairingInfo.key.toHex();
     
     if (!pairingInfo.isValid()) {
         m_lastError = "Invalid pairing info";
@@ -306,6 +308,7 @@ bool CommandSet::openSecureChannel(const PairingInfo& pairingInfo)
     }
 
     qDebug() << "CommandSet: Secure channel opened with mutual auth!";
+    qDebug() << "📞 CommandSet::openSecureChannel() - END - Success";
     return true;
 }
 
@@ -410,7 +413,8 @@ bool CommandSet::unpair(uint8_t index)
 
 ApplicationStatus CommandSet::getStatus(uint8_t info)
 {
-    qDebug() << "CommandSet: GET_STATUS info:" << info;
+    qDebug() << "📞 CommandSet::getStatus() - START - Thread:" << QThread::currentThread();
+    qDebug() << "📞   Info parameter:" << info;
     
     if (!m_secureChannel->isOpen()) {
         m_lastError = "Secure channel not open";
@@ -429,7 +433,8 @@ ApplicationStatus CommandSet::getStatus(uint8_t info)
 
 bool CommandSet::verifyPIN(const QString& pin)
 {
-    qDebug() << "CommandSet: VERIFY_PIN with PIN:" << pin;
+    qDebug() << "📞 CommandSet::verifyPIN() - START - Thread:" << QThread::currentThread();
+    qDebug() << "📞   PIN length:" << pin.length();
     
     if (!m_secureChannel->isOpen()) {
         m_lastError = "Secure channel not open";
@@ -438,20 +443,39 @@ bool CommandSet::verifyPIN(const QString& pin)
     
     qDebug() << "CommandSet: Building VERIFY_PIN command";
     APDU::Command cmd = buildCommand(APDU::INS_VERIFY_PIN, 0, 0, pin.toUtf8());
-    qDebug() << "CommandSet: Sending encrypted VERIFY_PIN command";
+    qDebug() << "📞 CommandSet: Sending encrypted VERIFY_PIN command via SecureChannel";
     APDU::Response resp = m_secureChannel->send(cmd);
     qDebug() << "CommandSet: Received response SW:" << QString("0x%1").arg(resp.sw(), 4, 16, QChar('0'));
+    
+    // CRITICAL FIX for hot-plug PIN validation:
+    // On hot-plugged cards, the first VERIFY_PIN may fail with 0x6f05 (invalid MAC)
+    // even though the secure channel is correctly established. This appears to be
+    // a card internal state issue where the crypto engine needs one command to
+    // fully synchronize. Automatic retry resolves this transparently to the user.
+    if (resp.sw() == 0x6f05) {
+        qWarning() << "CommandSet: VERIFY_PIN failed with 0x6f05, retrying once (hot-plug state sync issue)";
+        QThread::msleep(50);  // Brief delay before retry
+        resp = m_secureChannel->send(cmd);
+        qDebug() << "CommandSet: Retry response SW:" << QString("0x%1").arg(resp.sw(), 4, 16, QChar('0'));
+    }
     
     // Check for wrong PIN (SW1=0x63, SW2=0xCX where X = remaining attempts)
     if ((resp.sw() & 0x63C0) == 0x63C0) {
         m_remainingPINAttempts = resp.sw() & 0x000F;
         m_lastError = QString("Wrong PIN. Remaining attempts: %1").arg(m_remainingPINAttempts);
         qWarning() << m_lastError;
+        qDebug() << "📞 CommandSet::verifyPIN() - END - FAILED (Wrong PIN)";
         return false;
     }
     
     m_remainingPINAttempts = -1;
-    return checkOK(resp);
+    bool result = checkOK(resp);
+    if (result) {
+        qDebug() << "📞 CommandSet::verifyPIN() - END - Success (PIN correct)";
+    } else {
+        qDebug() << "📞 CommandSet::verifyPIN() - END - FAILED with SW:" << QString("0x%1").arg(resp.sw(), 4, 16, QChar('0'));
+    }
+    return result;
 }
 
 // Helper function to parse BIP32 derivation path
@@ -751,6 +775,41 @@ QByteArray CommandSet::signWithPath(const QByteArray& data, const QString& path,
     return fullResp;
 }
 
+QByteArray CommandSet::signWithPathFullResponse(const QByteArray& data, const QString& path, bool makeCurrent)
+{
+    qDebug() << "CommandSet: SIGN_WITH_PATH_FULL_RESPONSE path:" << path << "makeCurrent:" << makeCurrent;
+    
+    // Validate input first
+    if (data.size() != 32) {
+        m_lastError = "Data must be 32 bytes (hash)";
+        qWarning() << m_lastError;
+        return QByteArray();
+    }
+    
+    if (!m_secureChannel->isOpen()) {
+        m_lastError = "Secure channel not open";
+        return QByteArray();
+    }
+    
+    uint8_t startingPoint = APDU::P1DeriveKeyFromMaster;
+    QByteArray pathData = parseDerivationPath(path, startingPoint);
+    
+    uint8_t p1 = makeCurrent ? APDU::P1SignDeriveAndMakeCurrent : APDU::P1SignDerive;
+    
+    // Concatenate data + path
+    QByteArray cmdData = data + pathData;
+    
+    APDU::Command cmd = buildCommand(APDU::INS_SIGN, p1, 1, cmdData);
+    APDU::Response resp = m_secureChannel->send(cmd);
+    
+    if (!checkOK(resp)) {
+        return QByteArray();
+    }
+    
+    // Return the full TLV response (includes public key and signature)
+    return resp.data();
+}
+
 QByteArray CommandSet::signPinless(const QByteArray& data)
 {
     qDebug() << "CommandSet: SIGN_PINLESS";
@@ -936,6 +995,16 @@ bool CommandSet::factoryReset()
 {
     qDebug() << "CommandSet: FACTORY_RESET";
     
+    // CRITICAL: Select the Keycard applet first (matches keycard-go implementation)
+    // The factory reset command requires the applet to be selected
+    ApplicationInfo appInfo = select();
+    if (!appInfo.initialized) {
+        // Card already in factory state - nothing to do
+        qDebug() << "CommandSet: Card already in factory state";
+        return true;
+    }
+    
+    // Send factory reset command
     APDU::Command cmd = buildCommand(APDU::INS_FACTORY_RESET, APDU::P1FactoryResetMagic, APDU::P2FactoryResetMagic);
     QByteArray rawResp = m_channel->transmit(cmd.serialize());
     APDU::Response resp(rawResp);

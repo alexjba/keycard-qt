@@ -158,6 +158,15 @@ public:
     QByteArray signWithPath(const QByteArray& data, const QString& path, bool makeCurrent = false);
     
     /**
+     * @brief Sign data with key at specific path, returning full TLV response
+     * @param data 32-byte hash to sign
+     * @param path Derivation path
+     * @param makeCurrent If true, derived key becomes current
+     * @return Full TLV response (includes public key and signature) on success
+     */
+    QByteArray signWithPathFullResponse(const QByteArray& data, const QString& path, bool makeCurrent = false);
+    
+    /**
      * @brief Sign without PIN (if pinless path set)
      * @param data 32-byte hash to sign
      * @return Signature on success

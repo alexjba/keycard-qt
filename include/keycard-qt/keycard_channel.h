@@ -45,7 +45,31 @@ class KeycardChannel : public QObject, public IChannel {
     Q_OBJECT
     
 public:
+    /**
+     * @brief Create KeycardChannel with default platform backend
+     * @param parent QObject parent
+     * 
+     * Automatically creates the appropriate backend:
+     * - PC/SC on desktop (Windows, macOS, Linux)
+     * - Qt NFC on iOS
+     * - Android NFC or Qt NFC on Android (build-dependent)
+     */
     explicit KeycardChannel(QObject* parent = nullptr);
+    
+    /**
+     * @brief Create KeycardChannel with injected backend (for testing/DI)
+     * @param backend Custom backend implementation (takes ownership)
+     * @param parent QObject parent
+     * 
+     * Allows dependency injection of custom backends, useful for:
+     * - Unit testing with mock backends
+     * - Custom platform implementations
+     * - Test automation without hardware
+     * 
+     * The channel takes ownership of the backend.
+     */
+    explicit KeycardChannel(KeycardChannelBackend* backend, QObject* parent = nullptr);
+    
     ~KeycardChannel() override;
     
     /**
@@ -66,6 +90,15 @@ public:
      * an already connected card.
      */
     void stopDetection();
+    
+    /**
+     * @brief Force immediate re-scan for cards
+     * 
+     * Triggers an immediate re-scan for cards. Useful after operations
+     * that change card state (e.g., initialization, factory reset).
+     * Only supported by backends that implement forceScan().
+     */
+    void forceScan();
     
     /**
      * @brief Disconnect from current target
@@ -120,6 +153,16 @@ public:
     
 signals:
     /**
+     * @brief Emitted when reader availability changes (PC/SC only)
+     * @param available true if at least one reader is present, false if no readers
+     * 
+     * This allows UI/state management to distinguish between:
+     * - No reader hardware (user needs to plug in reader)
+     * - Reader present but no card (user needs to insert card)
+     */
+    void readerAvailabilityChanged(bool available);
+
+    /**
      * @brief Emitted when a Keycard is detected and ready for communication
      * @param uid Unique identifier of the detected card (hex string)
      * 
@@ -145,15 +188,26 @@ signals:
     
 private:
     /**
-     * @brief Backend instance selected at compile time
+     * @brief Create default platform backend
+     * @return Newly created backend instance
+     * 
+     * Factory method that creates the appropriate backend based on platform.
+     * Called by the default constructor.
+     */
+    KeycardChannelBackend* createDefaultBackend();
+    
+    /**
+     * @brief Backend instance selected at compile time or injected
      * 
      * Pointer to the platform-specific backend implementation:
      * - KeycardChannelPcsc on desktop
      * - KeycardChannelQtNfc on mobile
+     * - Custom backend (via DI constructor)
      */
     KeycardChannelBackend* m_backend;
     
     QString m_targetUid;  // Cached UID for quick access
+    bool m_ownsBackend;    // true if we created the backend, false if injected
 };
 
 } // namespace Keycard

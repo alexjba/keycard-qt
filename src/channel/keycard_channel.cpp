@@ -29,26 +29,16 @@
 
 namespace Keycard {
 
+// Default constructor - creates platform-specific backend
 KeycardChannel::KeycardChannel(QObject* parent)
     : QObject(parent)
     , m_backend(nullptr)
+    , m_ownsBackend(true)
 {
     qDebug() << "========================================";
-    qDebug() << "KeycardChannel: Initializing with plugin architecture";
+    qDebug() << "KeycardChannel: Initializing with default platform backend";
     
-    // Factory: Create appropriate backend based on platform
-#ifdef KEYCARD_BACKEND_PCSC
-    qDebug() << "KeycardChannel: Creating PC/SC backend (Desktop)";
-    m_backend = new KeycardChannelPcsc(this);
-#elif defined(KEYCARD_BACKEND_QT_NFC)
-    qDebug() << "KeycardChannel: Creating Qt NFC backend (Mobile)";
-    m_backend = new KeycardChannelQtNfc(this);
-#elif defined(KEYCARD_BACKEND_ANDROID_NFC)
-    qDebug() << "KeycardChannel: Creating Android NFC backend (Direct JNI)";
-    m_backend = new KeycardChannelAndroidNfc(this);
-#else
-    #error "No Keycard backend available for this platform"
-#endif
+    m_backend = createDefaultBackend();
     
     if (!m_backend) {
         qCritical() << "KeycardChannel: Failed to create backend!";
@@ -59,6 +49,9 @@ KeycardChannel::KeycardChannel(QObject* parent)
     qDebug() << "========================================";
     
     // Connect backend signals to our signals (pass-through)
+    connect(m_backend, &KeycardChannelBackend::readerAvailabilityChanged,
+            this, &KeycardChannel::readerAvailabilityChanged);
+    
     connect(m_backend, &KeycardChannelBackend::targetDetected,
             this, [this](const QString& uid) {
         m_targetUid = uid;
@@ -73,6 +66,67 @@ KeycardChannel::KeycardChannel(QObject* parent)
     
     connect(m_backend, &KeycardChannelBackend::error,
             this, &KeycardChannel::error);
+}
+
+// DI constructor - accepts injected backend
+KeycardChannel::KeycardChannel(KeycardChannelBackend* backend, QObject* parent)
+    : QObject(parent)
+    , m_backend(backend)
+    , m_ownsBackend(false)  // Don't delete injected backend
+{
+    qDebug() << "========================================";
+    qDebug() << "KeycardChannel: Initializing with injected backend";
+    
+    if (!m_backend) {
+        qCritical() << "KeycardChannel: Injected backend is null!";
+        return;
+    }
+    
+    // Set parent to manage lifetime if backend has no parent
+    if (!m_backend->parent()) {
+        m_backend->setParent(this);
+        m_ownsBackend = true;  // We'll manage it now
+    }
+    
+    qDebug() << "KeycardChannel: Backend:" << m_backend->backendName();
+    qDebug() << "========================================";
+    
+    // Connect backend signals to our signals (pass-through)
+    connect(m_backend, &KeycardChannelBackend::readerAvailabilityChanged,
+            this, &KeycardChannel::readerAvailabilityChanged);
+    
+    connect(m_backend, &KeycardChannelBackend::targetDetected,
+            this, [this](const QString& uid) {
+        m_targetUid = uid;
+        emit targetDetected(uid);
+    });
+    
+    connect(m_backend, &KeycardChannelBackend::cardRemoved,
+            this, [this]() {
+        m_targetUid.clear();
+        emit targetLost();
+    });
+    
+    connect(m_backend, &KeycardChannelBackend::error,
+            this, &KeycardChannel::error);
+}
+
+KeycardChannelBackend* KeycardChannel::createDefaultBackend()
+{
+    // Factory: Create appropriate backend based on platform
+#ifdef KEYCARD_BACKEND_PCSC
+    qDebug() << "KeycardChannel: Creating PC/SC backend (Desktop)";
+    return new KeycardChannelPcsc(this);
+#elif defined(KEYCARD_BACKEND_QT_NFC)
+    qDebug() << "KeycardChannel: Creating Qt NFC backend (Mobile)";
+    return new KeycardChannelQtNfc(this);
+#elif defined(KEYCARD_BACKEND_ANDROID_NFC)
+    qDebug() << "KeycardChannel: Creating Android NFC backend (Direct JNI)";
+    return new KeycardChannelAndroidNfc(this);
+#else
+    #error "No Keycard backend available for this platform"
+    return nullptr;
+#endif
 }
 
 KeycardChannel::~KeycardChannel()
@@ -95,6 +149,16 @@ void KeycardChannel::stopDetection()
 {
     if (m_backend) {
         m_backend->stopDetection();
+    } else {
+        qWarning() << "KeycardChannel: No backend available!";
+    }
+}
+
+void KeycardChannel::forceScan()
+{
+    if (m_backend) {
+        // Try to call forceScan() on the backend if it supports it
+        QMetaObject::invokeMethod(m_backend, "forceScan", Qt::QueuedConnection);
     } else {
         qWarning() << "KeycardChannel: No backend available!";
     }

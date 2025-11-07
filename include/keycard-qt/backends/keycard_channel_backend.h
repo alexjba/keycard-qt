@@ -79,6 +79,17 @@ public:
 
 signals:
     /**
+     * @brief Emitted when reader availability changes (PC/SC only)
+     * @param available true if at least one reader is present, false if no readers
+     * 
+     * This signal allows proper state tracking:
+     * - No readers → WaitingForReader state
+     * - Reader present → WaitingForCard state  
+     * - Card detected → ConnectingCard state
+     */
+    void readerAvailabilityChanged(bool available);
+
+    /**
      * @brief Emitted when a card/tag is detected and ready for communication
      * @param uid Unique identifier of the detected card/tag (hex string)
      */

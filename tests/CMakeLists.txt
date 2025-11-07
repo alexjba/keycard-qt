@@ -6,12 +6,24 @@ enable_testing()
 
 # Test helper - create test executable
 function(add_keycard_test test_name)
-    add_executable(${test_name} ${test_name}.cpp)
+    # Check if there are additional source files (e.g., mocks)
+    if(${ARGC} GREATER 1)
+        set(EXTRA_SOURCES ${ARGN})
+        add_executable(${test_name} ${test_name}.cpp ${EXTRA_SOURCES})
+    else()
+        add_executable(${test_name} ${test_name}.cpp)
+    endif()
     
     target_link_libraries(${test_name}
         PRIVATE
             keycard-qt
             Qt6::Test
+    )
+    
+    # Include test directory for mocks
+    target_include_directories(${test_name}
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
     )
     
     # Enable test helpers for bypassing crypto in unit tests
@@ -42,6 +54,9 @@ add_keycard_test(test_keycard_channel)
 add_keycard_test(test_command_set_new)
 add_keycard_test(test_pbkdf2)
 add_keycard_test(test_init_pair)
+
+# Dependency Injection tests with mock backend
+add_keycard_test(test_keycard_channel_di mocks/mock_backend.cpp)
 
 message(STATUS "Unit tests configured - run with: ctest --verbose")
 

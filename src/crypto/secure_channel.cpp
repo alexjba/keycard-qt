@@ -2,6 +2,7 @@
 #include "keycard-qt/apdu/utils.h"
 #include <QDebug>
 #include <QCryptographicHash>
+#include <QThread>
 #include <stdexcept>
 
 // OpenSSL is the sole cryptographic backend
@@ -257,6 +258,19 @@ QByteArray SecureChannel::secret() const
 
 APDU::Response SecureChannel::send(const APDU::Command& command)
 {
+    // CRITICAL: Protect IV state from concurrent access by multiple threads
+    // The IV is updated after each command send, and if two threads try to send
+    // commands simultaneously, they will corrupt the IV state, causing the card
+    // to reject commands with errors like 0x6f05 (invalid MAC).
+    // This fixes the bug where PIN verification fails on first attempt when card
+    // is inserted after app startup (UI thread calls getStatus while worker thread
+    // calls verifyPIN, causing IV desynchronization).
+    QMutexLocker locker(&m_secureMutex);
+    
+    // Log to verify the fix is applied (shows thread-safe operation)
+    qDebug() << "🔒 SecureChannel: MUTEX PROTECTED send() - Thread:" << QThread::currentThread();
+    qDebug() << "🔒 SecureChannel: IV at start of send():" << d->iv.toHex();
+    
     if (!d->open) {
         throw std::runtime_error("Secure channel not open");
     }
@@ -287,7 +301,9 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
     meta.append(QByteArray(11, 0x00));  // Pad to 16 bytes total
     
     // Update IV with MAC computed over meta and encrypted_data
+    QByteArray oldIV = d->iv;
     d->iv = calculateMAC(meta, encData);
+    qDebug() << "🔒 SecureChannel: IV updated (BEFORE send):" << oldIV.toHex() << "->" << d->iv.toHex();
     
     // Build new data: [IV][encrypted_data]
     QByteArray newData = d->iv + encData;
@@ -360,9 +376,15 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
         }
         
         // Update IV for next operation
+        QByteArray prevIV = d->iv;
         d->iv = calculatedMac;
+        qDebug() << "🔒 SecureChannel: IV updated (AFTER recv):" << prevIV.toHex() << "->" << d->iv.toHex();
         
-        return APDU::Response(decrypted + QByteArray::fromHex("9000"));
+        // CRITICAL FIX: The decrypted response format is [data...][SW1][SW2]
+        // The status word is AT THE END of the decrypted data, NOT separate.
+        // Simply return the decrypted data as-is - it already contains the status word.
+        // DO NOT append 9000 or we'll mask the real status word!
+        return APDU::Response(decrypted);
     }
     
     return response;
