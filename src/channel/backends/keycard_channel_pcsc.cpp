@@ -263,6 +263,11 @@ void KeycardChannelPcsc::startDetection()
     establishContext();
     
     if (!m_pcscState->contextEstablished) {
+        // PC/SC not available - report no readers immediately for consistent state
+        qDebug() << "KeycardChannelPcsc: PC/SC context failed - reporting no readers";
+        m_lastReaderAvailable = false;
+        m_firstReaderCheck = false;
+        emit readerAvailabilityChanged(false);
         emit error("Failed to establish PC/SC context");
         return;
     }
@@ -272,6 +277,20 @@ void KeycardChannelPcsc::startDetection()
         qDebug() << "KeycardChannelPcsc: Detection already running";
         return;
     }
+    
+    // Immediately check and report reader availability (synchronously)
+    // This ensures tests and UI can get initial state without waiting for background thread
+    QStringList readers = listReaders();
+    if (readers.isEmpty()) {
+        qDebug() << "KeycardChannelPcsc: Initial state - No readers found";
+        m_lastReaderAvailable = false;
+        emit readerAvailabilityChanged(false);
+    } else {
+        qDebug() << "KeycardChannelPcsc: Initial state - Reader(s) detected:" << readers.size();
+        m_lastReaderAvailable = true;
+        emit readerAvailabilityChanged(true);
+    }
+    m_firstReaderCheck = false;  // We've now done the first check
     
     // Reset stop flag
     m_stopDetection = 0;
