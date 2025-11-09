@@ -998,6 +998,13 @@ bool CommandSet::factoryReset()
     // CRITICAL: Select the Keycard applet first (matches keycard-go implementation)
     // The factory reset command requires the applet to be selected
     ApplicationInfo appInfo = select();
+    
+    // Check if SELECT failed (not installed means error, not factory state)
+    if (!appInfo.installed) {
+        // SELECT failed - return error
+        return false;
+    }
+    
     if (!appInfo.initialized) {
         // Card already in factory state - nothing to do
         qDebug() << "CommandSet: Card already in factory state";
