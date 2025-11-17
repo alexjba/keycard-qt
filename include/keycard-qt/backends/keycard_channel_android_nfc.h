@@ -32,6 +32,10 @@ public:
     static void onJavaTagConnected(JNIEnv* env, jobject thiz, jlong nativePtr, jobject isoDep);
     static void onJavaTagDisconnected(JNIEnv* env, jobject thiz, jlong nativePtr);
 
+protected:
+    // Override to handle custom events for thread-safe signal emission
+    bool event(QEvent* e) override;
+
 private slots:
     void onTagDiscovered(const QJniObject& tag);
 

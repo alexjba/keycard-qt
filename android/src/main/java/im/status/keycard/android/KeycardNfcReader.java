@@ -14,9 +14,12 @@ import java.io.IOException;
 public class KeycardNfcReader implements NfcAdapter.ReaderCallback {
     private static final String TAG = "KeycardNfcReader";
     private static final int NFC_TIMEOUT_MS = 120000; // 120 seconds (matching React Native)
+    private static final int TAG_PRESENCE_CHECK_INTERVAL_MS = 500; // Check every 500ms
 
     private IsoDep isoDep;
     private volatile boolean connected = false;
+    private volatile boolean monitoringActive = false;
+    private Thread presenceMonitorThread;
 
     // Native callback methods
     private static native void onNativeTagConnected(long nativePtr, Object isoDep);
@@ -65,8 +68,15 @@ public class KeycardNfcReader implements NfcAdapter.ReaderCallback {
 
             connected = true;
 
-            // Notify C++ side that tag is connected
-            onNativeTagConnected(nativePtr, isoDep);
+            // Start monitoring for tag removal (Android doesn't provide automatic callback)
+            startTagPresenceMonitoring();
+
+            // Notify C++ side that tag is connected (only if nativePtr is valid)
+            if (nativePtr != 0) {
+                onNativeTagConnected(nativePtr, isoDep);
+            } else {
+                Log.w(TAG, "⚠️ nativePtr is 0, skipping onNativeTagConnected callback");
+            }
 
         } catch (IOException e) {
             Log.e(TAG, "Error connecting to IsoDep: " + e.getMessage(), e);
@@ -173,10 +183,83 @@ public class KeycardNfcReader implements NfcAdapter.ReaderCallback {
     }
 
     /**
+     * Start monitoring thread to detect tag removal
+     * Android's ReaderCallback doesn't provide automatic tag removal notifications,
+     * so we need to poll isConnected() periodically
+     */
+    private void startTagPresenceMonitoring() {
+        if (monitoringActive) {
+            Log.d(TAG, "Tag presence monitoring already active");
+            return;
+        }
+
+        monitoringActive = true;
+        presenceMonitorThread = new Thread(() -> {
+            Log.d(TAG, "🔍 Tag presence monitoring thread started");
+            
+            while (monitoringActive && connected) {
+                try {
+                    Thread.sleep(TAG_PRESENCE_CHECK_INTERVAL_MS);
+                    
+                    // Check if tag is still connected
+                    if (isoDep == null || !isoDep.isConnected()) {
+                        Log.w(TAG, "⚠️ Tag removed from NFC field (detected by monitoring thread)");
+                        
+                        // Stop monitoring before calling disconnect to prevent recursion
+                        monitoringActive = false;
+                        
+                        // Tag was removed - notify and clean up
+                        disconnect();
+                        break;
+                    }
+                } catch (InterruptedException e) {
+                    Log.d(TAG, "Tag presence monitoring interrupted");
+                    break;
+                } catch (Exception e) {
+                    Log.e(TAG, "Error checking tag presence: " + e.getMessage());
+                    monitoringActive = false;
+                    disconnect();
+                    break;
+                }
+            }
+            
+            Log.d(TAG, "🔍 Tag presence monitoring thread stopped");
+        });
+        
+        presenceMonitorThread.setDaemon(true);
+        presenceMonitorThread.start();
+    }
+
+    /**
+     * Stop monitoring thread
+     */
+    private void stopTagPresenceMonitoring() {
+        if (monitoringActive) {
+            Log.d(TAG, "Stopping tag presence monitoring");
+            monitoringActive = false;
+            
+            if (presenceMonitorThread != null && presenceMonitorThread.isAlive()) {
+                presenceMonitorThread.interrupt();
+                try {
+                    presenceMonitorThread.join(1000); // Wait up to 1 second
+                } catch (InterruptedException e) {
+                    Log.w(TAG, "Interrupted while waiting for monitoring thread to stop");
+                }
+            }
+            presenceMonitorThread = null;
+        }
+    }
+
+    /**
      * Disconnect from the card
      */
     public void disconnect() {
         Log.d(TAG, "Disconnecting from IsoDep");
+        
+        // Stop monitoring first to prevent it from calling disconnect again
+        stopTagPresenceMonitoring();
+        
+        boolean wasConnected = connected;
         connected = false;
 
         if (isoDep != null) {
@@ -190,8 +273,31 @@ public class KeycardNfcReader implements NfcAdapter.ReaderCallback {
             isoDep = null;
         }
 
-        // Notify C++ side
-        onNativeTagDisconnected(nativePtr);
+        // Only notify C++ side if we were actually connected
+        // This prevents double notification when monitoring thread triggers disconnect
+        if (wasConnected && nativePtr != 0) {
+            onNativeTagDisconnected(nativePtr);
+        }
+    }
+
+    /**
+     * Destroy this reader and clean up all resources
+     * Called when the C++ object is being destroyed
+     */
+    public void destroy() {
+        Log.d(TAG, "🔴 destroy() called - invalidating nativePtr");
+        
+        // Stop monitoring first
+        stopTagPresenceMonitoring();
+        
+        // Disconnect from any active tag
+        disconnect();
+        
+        // CRITICAL: Clear nativePtr to prevent any future JNI callbacks
+        // This prevents crashes if callbacks arrive after C++ object is deleted
+        nativePtr = 0;
+        
+        Log.d(TAG, "🔴 KeycardNfcReader destroyed and invalidated");
     }
 }
 
