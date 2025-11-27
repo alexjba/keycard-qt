@@ -24,6 +24,8 @@ public:
     QByteArray transmit(const QByteArray& apdu) override;
     bool isConnected() const override;
     QString backendName() const override;
+    void setState(ChannelState state) override;
+    ChannelState state() const override { return m_state; }
 
     // NFC intent handling
     static bool checkForNfcIntent(const QJniObject& intent);
@@ -31,6 +33,13 @@ public:
     // JNI callback methods (called from Java) - must be public for JNI access
     static void onJavaTagConnected(JNIEnv* env, jobject thiz, jlong nativePtr, jobject isoDep);
     static void onJavaTagDisconnected(JNIEnv* env, jobject thiz, jlong nativePtr);
+
+public slots:
+    /**
+     * @brief Force immediate re-scan for cards (used after init/factory reset)
+     * No-op on Android - card stays in NFC field continuously
+     */
+    void forceScan();
 
 protected:
     // Override to handle custom events for thread-safe signal emission
@@ -40,17 +49,17 @@ private slots:
     void onTagDiscovered(const QJniObject& tag);
 
 private:
-    void setupNfcAdapter();
     void connectToIsoDep(const QJniObject& tag);
     void handleMultiFrameResponse(QByteArray& response);
-    void enableReaderMode();
-    void disableReaderMode();
 
-    QJniObject m_nfcAdapter;
-    QJniObject m_readerCallback; // KeycardNfcReader instance
+    QJniObject m_readerCallback; // Reference to SINGLETON KeycardNfcReader instance
 
     static QJniObject s_activeIsoDep;
     static bool s_connected;
+    static QString s_currentCardUID;  // Track current card for virtual session (iOS-style)
+    
+    // Channel state (state-driven architecture)
+    ChannelState m_state = ChannelState::Idle;
 };
 
 } // namespace Keycard

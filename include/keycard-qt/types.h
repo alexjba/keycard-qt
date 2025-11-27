@@ -37,11 +37,13 @@ struct ApplicationStatus {
     uint8_t pukRetryCount;   ///< Remaining PUK attempts
     bool keyInitialized;     ///< True if keys are loaded
     QByteArray currentPath;  ///< Current derivation path
+    bool valid;
     
     ApplicationStatus()
         : pinRetryCount(0)
         , pukRetryCount(0)
         , keyInitialized(false)
+        , valid(false)
     {}
 };
 

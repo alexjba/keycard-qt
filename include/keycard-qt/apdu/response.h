@@ -21,6 +21,12 @@ public:
      * @param rawResponse Complete response including SW1/SW2
      */
     explicit Response(const QByteArray& rawResponse);
+
+    /**
+     * @brief Initialize from raw response bytes
+     * @param rawResponse Complete response including SW1/SW2
+     */
+    void setData(const QByteArray& rawResponse);
     
     /**
      * @brief Get the response data (without status word)

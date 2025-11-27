@@ -1,304 +1,524 @@
 package im.status.keycard.android;
 
+import android.app.Activity;
+import android.app.Application;
 import android.nfc.NfcAdapter;
 import android.nfc.Tag;
+import android.nfc.TagLostException;
 import android.nfc.tech.IsoDep;
+import android.os.Bundle;
+import android.app.Dialog;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
- * NFC Reader callback for Keycard using enableReaderMode()
- * This is the modern Android NFC API approach used by React Native
+ * GLOBAL SINGLETON NFC Reader callback for Keycard
+ * 
+ * This singleton is registered ONCE with Android's NFC stack and routes
+ * tag events to multiple C++ backends (SessionManager, FlowManager, etc.)
  */
 public class KeycardNfcReader implements NfcAdapter.ReaderCallback {
     private static final String TAG = "KeycardNfcReader";
-    private static final int NFC_TIMEOUT_MS = 120000; // 120 seconds (matching React Native)
-    private static final int TAG_PRESENCE_CHECK_INTERVAL_MS = 500; // Check every 500ms
+    private static final int NFC_TIMEOUT_MS = 120000;
+    private static final int DETECTION_CHECK_INTERVAL_MS = 500;
+
+    private static KeycardNfcReader instance;
+    private static final Object lock = new Object();
 
     private IsoDep isoDep;
-    private volatile boolean connected = false;
-    private volatile boolean monitoringActive = false;
-    private Thread presenceMonitorThread;
+    private volatile boolean detectionLoopActive = false;
+    private Thread detectionThread;
+    
+    private Activity currentActivity;
+    private NfcAdapter nfcAdapter;
+    private boolean lifecycleCallbacksRegistered = false;
+    
+    // UI Elements
+    private Dialog nfcDrawerDialog;
+    private TextView drawerTitle;
+    private TextView drawerMessage;
+    private TextView drawerIcon;
 
-    // Native callback methods
+    private final Set<Long> registeredBackends = new HashSet<>();
+
     private static native void onNativeTagConnected(long nativePtr, Object isoDep);
     private static native void onNativeTagDisconnected(long nativePtr);
+    
+    private final Application.ActivityLifecycleCallbacks lifecycleCallbacks = new Application.ActivityLifecycleCallbacks() {
+        @Override
+        public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+        
+        @Override
+        public void onActivityStarted(Activity activity) {}
+        
+        @Override
+        public void onActivityResumed(Activity activity) {}
 
-    private long nativePtr; // Pointer to C++ KeycardChannelAndroidNfc instance
+        @Override
+        public void onActivityPaused(Activity activity) {}
 
-    public KeycardNfcReader(long nativePtr) {
-        this.nativePtr = nativePtr;
-        Log.d(TAG, "KeycardNfcReader created with nativePtr: " + nativePtr);
+        @Override
+        public void onActivityStopped(Activity activity) {}
+
+        @Override
+        public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+
+        @Override
+        public void onActivityDestroyed(Activity activity) {
+            if (activity == currentActivity) {
+                currentActivity = null;
+            }
+        }
+    };
+
+    public static KeycardNfcReader getInstance() {
+        if (instance == null) {
+            synchronized (lock) {
+                if (instance == null) {
+                    instance = new KeycardNfcReader();
+                }
+            }
+        }
+        return instance;
+    }
+
+    private KeycardNfcReader() {}
+
+    public void registerBackend(long nativePtr) {
+        synchronized (registeredBackends) {
+            registeredBackends.add(nativePtr);
+        }
+    }
+
+    public void unregisterBackend(long nativePtr) {
+        synchronized (registeredBackends) {
+            registeredBackends.remove(nativePtr);
+        }
+    }
+
+
+    public void enableReaderMode(final Activity activity) {
+        if (activity != null) {
+            currentActivity = activity;
+            
+            if (!lifecycleCallbacksRegistered) {
+                try {
+                    activity.getApplication().registerActivityLifecycleCallbacks(lifecycleCallbacks);
+                    lifecycleCallbacksRegistered = true;
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to register lifecycle callbacks", e);
+                }
+            }
+        }
+        
+        if (currentActivity == null) {
+            return;
+        }
+        
+        final Runnable enableTask = () -> {
+            try {
+                nfcAdapter = NfcAdapter.getDefaultAdapter(currentActivity);
+                if (nfcAdapter == null) {
+                    Log.e(TAG, "NFC adapter not available");
+                    return;
+                }
+
+                int flags = NfcAdapter.FLAG_READER_NFC_A | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK;
+                nfcAdapter.enableReaderMode(currentActivity, KeycardNfcReader.this, flags, null);
+                showNfcDrawer(currentActivity);
+                startDetectionLoop();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to enable reader mode", e);
+            }
+        };
+
+        if (currentActivity.getMainLooper().getThread() == Thread.currentThread()) {
+            enableTask.run();
+        } else {
+            currentActivity.runOnUiThread(enableTask);
+        }
+    }
+
+    private void disableReaderMode() {
+        stopDetectionLoop();
+        hideNfcDrawer();
+        
+        if (nfcAdapter != null && currentActivity != null) {
+            try {
+                nfcAdapter.disableReaderMode(currentActivity);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to disable reader mode", e);
+            }
+        }
+    }
+
+    public void forceScan() {
+        disableReaderMode();
+        if (currentActivity != null) {
+            enableReaderMode(currentActivity);
+        }
     }
 
     @Override
     public void onTagDiscovered(Tag tag) {
-        Log.d(TAG, "🔍 onTagDiscovered called!");
-
         try {
-            // Get IsoDep technology from tag
-            isoDep = IsoDep.get(tag);
-            if (isoDep == null) {
-                Log.w(TAG, "Tag does not support IsoDep");
+            IsoDep newIsoDep = IsoDep.get(tag);
+            if (newIsoDep == null) {
                 return;
             }
 
-            // Connect to the tag
-            isoDep.connect();
-            Log.d(TAG, "✅ IsoDep connected!");
-
-            // Set timeout to 120 seconds (matching React Native)
-            isoDep.setTimeout(NFC_TIMEOUT_MS);
-            Log.d(TAG, "✅ IsoDep timeout set to " + NFC_TIMEOUT_MS + " ms");
-
-            // Check capabilities
-            boolean supportsExtended = isoDep.isExtendedLengthApduSupported();
-            int maxLength = isoDep.getMaxTransceiveLength();
-            Log.d(TAG, "IsoDep extended APDU supported: " + supportsExtended);
-            Log.d(TAG, "IsoDep max transceive length: " + maxLength + " bytes");
-
-            // Get tag UID
-            byte[] tagId = tag.getId();
-            StringBuilder uidHex = new StringBuilder();
-            for (byte b : tagId) {
-                uidHex.append(String.format("%02x", b));
-            }
-            Log.d(TAG, "Tag UID: " + uidHex.toString());
-
-            connected = true;
-
-            // Start monitoring for tag removal (Android doesn't provide automatic callback)
-            startTagPresenceMonitoring();
-
-            // Notify C++ side that tag is connected (only if nativePtr is valid)
-            if (nativePtr != 0) {
-                onNativeTagConnected(nativePtr, isoDep);
-            } else {
-                Log.w(TAG, "⚠️ nativePtr is 0, skipping onNativeTagConnected callback");
+            synchronized (lock) {
+                if (isoDep != null) {
+                    try {
+                        if (isoDep.isConnected() && isSameTag(isoDep.getTag(), tag)) {
+                            return;
+                        }
+                    } catch (SecurityException e) {
+                        // Tag is stale/out of date, proceed with new connection
+                    }
+                    
+                    try {
+                        isoDep.close();
+                    } catch (IOException | SecurityException e) {
+                        // Ignore
+                    }
+                    isoDep = null;
+                }
             }
 
-        } catch (IOException e) {
-            Log.e(TAG, "Error connecting to IsoDep: " + e.getMessage(), e);
-            disconnect();
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception connecting to IsoDep: " + e.getMessage(), e);
-            disconnect();
-        }
-    }
-
-    /**
-     * Transmit APDU command to the card
-     * Called from C++ via JNI
-     */
-    public byte[] transceive(byte[] apdu) throws IOException {
-        if (isoDep == null || !isoDep.isConnected()) {
-            throw new IOException("IsoDep not connected");
-        }
-
-        // Log the APDU being sent
-        StringBuilder apduHex = new StringBuilder();
-        for (byte b : apdu) {
-            apduHex.append(String.format("%02x", b));
-        }
-        Log.d(TAG, "📤 Sending APDU (" + apdu.length + " bytes): " + apduHex.toString());
-
-        // ⚠️ CRITICAL FIX: Workaround for Android NFC IsoDep truncation bug after app restart
-        // On first app session, IsoDep returns full responses (66-130 bytes)
-        // After app restart, same card/same commands return only 34 bytes (truncated!)
-        // This appears to be an Android NFC stack bug where buffers get limited after restart
-        
-        // Try to force a reconnection if we're in a potentially bad state
-        try {
-            // Check connection health
-            if (!isoDep.isConnected()) {
-                Log.w(TAG, "⚠️ IsoDep disconnected, attempting reconnect...");
-                isoDep.connect();
-                isoDep.setTimeout(NFC_TIMEOUT_MS);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to reconnect IsoDep: " + e.getMessage());
-        }
-
-        // Transceive
-        byte[] response = isoDep.transceive(apdu);
-
-        // Log the response received
-        StringBuilder responseHex = new StringBuilder();
-        for (byte b : response) {
-            responseHex.append(String.format("%02x", b));
-        }
-        Log.d(TAG, "📥 Received response (" + response.length + " bytes): " + responseHex.toString());
-
-        // 🔍 DETECTION & FIX: Check if we got a truncated response
-        // (34 bytes = 16 MAC + 16 encrypted + 2 SW)
-        // This indicates the Android NFC IsoDep truncation bug is active
-        if (response.length == 34 && apdu.length >= 38) {
-            Log.w(TAG, "⚠️ TRUNCATION DETECTED: Got 34 bytes for " + apdu.length + "-byte command");
-            Log.w(TAG, "⚠️ Attempting workaround: Disconnect/reconnect and retry...");
+            newIsoDep.setTimeout(NFC_TIMEOUT_MS);
+            newIsoDep.connect();
             
-            try {
-                // Force a complete disconnect/reconnect cycle
-                isoDep.close();
-                Thread.sleep(100); // Brief delay to let Android NFC stack reset
-                isoDep.connect();
-                isoDep.setTimeout(NFC_TIMEOUT_MS);
-                
-                Log.d(TAG, "✅ Reconnected IsoDep, retrying command...");
-                
-                // Retry the command
-                byte[] retryResponse = isoDep.transceive(apdu);
-                
-                // Log retry result
-                StringBuilder retryHex = new StringBuilder();
-                for (byte b : retryResponse) {
-                    retryHex.append(String.format("%02x", b));
-                }
-                Log.d(TAG, "📥 RETRY response (" + retryResponse.length + " bytes): " + retryHex.toString());
-                
-                if (retryResponse.length > 34) {
-                    Log.d(TAG, "✅ WORKAROUND SUCCESSFUL: Got " + retryResponse.length + " bytes after reconnect!");
-                    return retryResponse;
-                } else {
-                    Log.w(TAG, "⚠️ Reconnect didn't help, still got " + retryResponse.length + " bytes");
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "❌ Reconnect/retry failed: " + e.getMessage());
-                // Fall through to return original truncated response
+            synchronized (lock) {
+                isoDep = newIsoDep;
             }
+        } catch (IOException | SecurityException e) {
+            Log.e(TAG, "Failed to connect IsoDep", e);
         }
-
-        return response;
     }
 
-    /**
-     * Check if connected to a card
-     */
+    private boolean isSameTag(Tag tag1, Tag tag2) {
+        if (tag1 == null || tag2 == null) {
+            return false;
+        }
+        
+        byte[] uid1 = tag1.getId();
+        byte[] uid2 = tag2.getId();
+        
+        if (uid1 == null || uid2 == null || uid1.length != uid2.length) {
+            return false;
+        }
+        
+        for (int i = 0; i < uid1.length; i++) {
+            if (uid1[i] != uid2[i]) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
     public boolean isConnected() {
         try {
-            return connected && isoDep != null && isoDep.isConnected();
+            synchronized (lock) {
+                return isoDep != null && isoDep.isConnected();
+            }
         } catch (SecurityException e) {
             return false;
         }
     }
 
-    /**
-     * Start monitoring thread to detect tag removal
-     * Android's ReaderCallback doesn't provide automatic tag removal notifications,
-     * so we need to poll isConnected() periodically
-     */
-    private void startTagPresenceMonitoring() {
-        if (monitoringActive) {
-            Log.d(TAG, "Tag presence monitoring already active");
+    public synchronized byte[] transceive(byte[] apdu) throws IOException {
+        setDrawerStateReading();
+
+        IsoDep currentIsoDep;
+        synchronized (lock) {
+            currentIsoDep = isoDep;
+        }
+        
+        if (currentIsoDep == null || !currentIsoDep.isConnected()) {
+            throw new IOException("IsoDep not connected");
+        }
+        
+        int retryCount = 3;
+        
+        for (int attempt = 0; attempt < retryCount; attempt++) {
+            try {
+                return currentIsoDep.transceive(apdu);
+            } catch (TagLostException e) {
+                Log.e(TAG, "Transceive failed (TagLost), attempt " + (attempt + 1) + "/" + retryCount, e);
+                
+                // Wait before retrying, unless this was the last attempt
+                if (attempt < retryCount - 1) {
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }
+            } catch (IOException e) {
+                Log.e(TAG, "Transceive failed (IO)", e);
+                return null;
+            }
+        }
+        
+        // All retries exhausted
+        return null;
+    }
+
+    private void startDetectionLoop() {
+        if (detectionLoopActive) {
             return;
         }
 
-        monitoringActive = true;
-        presenceMonitorThread = new Thread(() -> {
-            Log.d(TAG, "🔍 Tag presence monitoring thread started");
+        detectionLoopActive = true;
+        detectionThread = new Thread(() -> {
+            boolean previouslyConnected = false;
             
-            while (monitoringActive && connected) {
+            while (detectionLoopActive) {
                 try {
-                    Thread.sleep(TAG_PRESENCE_CHECK_INTERVAL_MS);
+                    Thread.sleep(DETECTION_CHECK_INTERVAL_MS);
                     
-                    // Check if tag is still connected
-                    if (isoDep == null || !isoDep.isConnected()) {
-                        Log.w(TAG, "⚠️ Tag removed from NFC field (detected by monitoring thread)");
-                        
-                        // Stop monitoring before calling disconnect to prevent recursion
-                        monitoringActive = false;
-                        
-                        // Tag was removed - notify and clean up
-                        disconnect();
-                        break;
+                    boolean currentlyConnected = isConnected();
+                    
+                    if (currentlyConnected && !previouslyConnected) {
+                        onTagConnected();
+                    } else if (!currentlyConnected && previouslyConnected) {
+                        onTagDisconnected();
                     }
+                    
+                    previouslyConnected = currentlyConnected;
                 } catch (InterruptedException e) {
-                    Log.d(TAG, "Tag presence monitoring interrupted");
                     break;
                 } catch (Exception e) {
-                    Log.e(TAG, "Error checking tag presence: " + e.getMessage());
-                    monitoringActive = false;
-                    disconnect();
-                    break;
+                    Log.e(TAG, "Detection loop error", e);
                 }
             }
-            
-            Log.d(TAG, "🔍 Tag presence monitoring thread stopped");
         });
         
-        presenceMonitorThread.setDaemon(true);
-        presenceMonitorThread.start();
+        detectionThread.setDaemon(true);
+        detectionThread.start();
     }
 
-    /**
-     * Stop monitoring thread
-     */
-    private void stopTagPresenceMonitoring() {
-        if (monitoringActive) {
-            Log.d(TAG, "Stopping tag presence monitoring");
-            monitoringActive = false;
-            
-            if (presenceMonitorThread != null && presenceMonitorThread.isAlive()) {
-                presenceMonitorThread.interrupt();
-                try {
-                    presenceMonitorThread.join(1000); // Wait up to 1 second
-                } catch (InterruptedException e) {
-                    Log.w(TAG, "Interrupted while waiting for monitoring thread to stop");
-                }
-            }
-            presenceMonitorThread = null;
-        }
-    }
-
-    /**
-     * Disconnect from the card
-     */
-    public void disconnect() {
-        Log.d(TAG, "Disconnecting from IsoDep");
+    private void stopDetectionLoop() {
+        detectionLoopActive = false;
         
-        // Stop monitoring first to prevent it from calling disconnect again
-        stopTagPresenceMonitoring();
-        
-        boolean wasConnected = connected;
-        connected = false;
-
-        if (isoDep != null) {
+        if (detectionThread != null && detectionThread.isAlive()) {
+            detectionThread.interrupt();
             try {
-                isoDep.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing IsoDep: " + e.getMessage());
-            } catch (SecurityException e) {
-                Log.e(TAG, "Security exception closing IsoDep: " + e.getMessage());
+                detectionThread.join(1000);
+            } catch (InterruptedException e) {
+                // Ignore
             }
-            isoDep = null;
         }
+        detectionThread = null;
+    }
 
-        // Only notify C++ side if we were actually connected
-        // This prevents double notification when monitoring thread triggers disconnect
-        if (wasConnected && nativePtr != 0) {
-            onNativeTagDisconnected(nativePtr);
+    private void onTagConnected() {
+        Set<Long> backends;
+        synchronized (registeredBackends) {
+            backends = new HashSet<>(registeredBackends);
+        }
+        
+        IsoDep currentIsoDep;
+        synchronized (lock) {
+            currentIsoDep = isoDep;
+        }
+        
+        for (Long nativePtr : backends) {
+            try {
+                onNativeTagConnected(nativePtr, currentIsoDep);
+            } catch (Exception e) {
+                Log.e(TAG, "Backend connection notification failed", e);
+            }
         }
     }
 
-    /**
-     * Destroy this reader and clean up all resources
-     * Called when the C++ object is being destroyed
-     */
-    public void destroy() {
-        Log.d(TAG, "🔴 destroy() called - invalidating nativePtr");
+    private void onTagDisconnected() {
+        synchronized (lock) {
+            if (isoDep != null) {
+                try {
+                    isoDep.close();
+                } catch (IOException | SecurityException e) {
+                    // Ignore
+                }
+                isoDep = null;
+            }
+        }
         
-        // Stop monitoring first
-        stopTagPresenceMonitoring();
+        Set<Long> backends;
+        synchronized (registeredBackends) {
+            backends = new HashSet<>(registeredBackends);
+        }
         
-        // Disconnect from any active tag
-        disconnect();
-        
-        // CRITICAL: Clear nativePtr to prevent any future JNI callbacks
-        // This prevents crashes if callbacks arrive after C++ object is deleted
-        nativePtr = 0;
-        
-        Log.d(TAG, "🔴 KeycardNfcReader destroyed and invalidated");
+        for (Long nativePtr : backends) {
+            try {
+                onNativeTagDisconnected(nativePtr);
+            } catch (Exception e) {
+                Log.e(TAG, "Backend disconnection notification failed", e);
+            }
+        }
+    }
+
+    public void disconnect() {
+        disableReaderMode();
+    }
+
+    private void showNfcDrawer(Activity activity) {
+        if (nfcDrawerDialog != null && nfcDrawerDialog.isShowing()) {
+            // Reset text in case it was in "Reading" state
+            if (drawerTitle != null) drawerTitle.setText("Ready to Scan");
+            if (drawerMessage != null) drawerMessage.setText("Hold your Keycard near the top back of your phone.");
+            return;
+        }
+
+        try {
+            nfcDrawerDialog = new Dialog(activity);
+            nfcDrawerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            
+            // Helper for dp to px
+            float density = activity.getResources().getDisplayMetrics().density;
+            int p16 = (int)(16 * density);
+            int p20 = (int)(20 * density);
+            int p24 = (int)(24 * density);
+            int p30 = (int)(30 * density);
+            int p40 = (int)(40 * density);
+            
+            // Container with rounded top corners
+            LinearLayout layout = new LinearLayout(activity);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            // Add extra bottom padding for safe area approximation
+            layout.setPadding(p24, p30, p24, p40); 
+            
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(Color.WHITE);
+            // Top-left, Top-right rounded corners (radius 16dp)
+            background.setCornerRadii(new float[]{p16, p16, p16, p16, 0, 0, 0, 0});
+            layout.setBackground(background);
+            
+            // Icon (Signal/Wave representation)
+            drawerIcon = new TextView(activity);
+            drawerIcon.setText("((•))"); 
+            drawerIcon.setTextSize(32);
+            drawerIcon.setTextColor(Color.parseColor("#007AFF")); // iOS Blue-ish
+            drawerIcon.setGravity(Gravity.CENTER);
+            drawerIcon.setPadding(0, 0, 0, p20);
+            layout.addView(drawerIcon);
+            
+            // Title
+            drawerTitle = new TextView(activity);
+            drawerTitle.setText("Ready to Scan");
+            drawerTitle.setTextSize(20);
+            drawerTitle.setTypeface(Typeface.DEFAULT_BOLD);
+            drawerTitle.setTextColor(Color.BLACK);
+            drawerTitle.setGravity(Gravity.CENTER);
+            drawerTitle.setPadding(0, 0, 0, p16);
+            layout.addView(drawerTitle);
+            
+            // Message
+            drawerMessage = new TextView(activity);
+            drawerMessage.setText("Hold your Keycard near the top back of your phone.");
+            drawerMessage.setTextSize(16);
+            drawerMessage.setTextColor(Color.DKGRAY);
+            drawerMessage.setGravity(Gravity.CENTER);
+            drawerMessage.setPadding(0, 0, 0, p30);
+            layout.addView(drawerMessage);
+            
+            // Cancel Button
+            Button cancelButton = new Button(activity);
+            cancelButton.setText("Cancel");
+            cancelButton.setTextColor(Color.parseColor("#007AFF"));
+            cancelButton.setBackgroundColor(Color.TRANSPARENT);
+            cancelButton.setAllCaps(false);
+            cancelButton.setTextSize(17);
+            cancelButton.setOnClickListener(v -> {
+                nfcDrawerDialog.dismiss();
+            });
+            layout.addView(cancelButton);
+            
+            nfcDrawerDialog.setContentView(layout);
+            nfcDrawerDialog.setCancelable(true);
+            nfcDrawerDialog.setOnCancelListener(dialog -> {
+                // Just dismiss, don't disable reader mode
+            });
+            
+            // Window attributes
+            Window window = nfcDrawerDialog.getWindow();
+            if (window != null) {
+                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                window.setGravity(Gravity.BOTTOM);
+                
+                // Dim background
+                WindowManager.LayoutParams params = window.getAttributes();
+                params.dimAmount = 0.5f;
+                params.flags |= WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+                window.setAttributes(params);
+            }
+            
+            nfcDrawerDialog.show();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to show NFC drawer", e);
+        }
+    }
+
+    private void setDrawerStateReading() {
+        if (currentActivity != null) {
+            currentActivity.runOnUiThread(() -> {
+                if (nfcDrawerDialog == null) showNfcDrawer(currentActivity);
+
+                if (nfcDrawerDialog != null) {
+                    if (!nfcDrawerDialog.isShowing()) nfcDrawerDialog.show();
+                    if (drawerTitle != null) drawerTitle.setText("Reading...");
+                    if (drawerMessage != null) drawerMessage.setText("Hold still...");
+                }
+            });
+        }
+    }
+
+    private void setDrawerKeycardLost() {
+        if (currentActivity != null) {
+            currentActivity.runOnUiThread(() -> {
+                if (nfcDrawerDialog == null) showNfcDrawer(currentActivity);
+                if (nfcDrawerDialog != null) {
+                    if (!nfcDrawerDialog.isShowing()) nfcDrawerDialog.show();
+                    if (drawerTitle != null) drawerTitle.setText("Keycard Lost");
+                    if (drawerMessage != null) drawerMessage.setText("Please tap your Keycard again.");
+                }
+            });
+        }
+    }
+
+    private void hideNfcDrawer() {
+        if (currentActivity != null) {
+            currentActivity.runOnUiThread(() -> {
+                if (nfcDrawerDialog != null) {
+                    try {
+                        nfcDrawerDialog.dismiss();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                    nfcDrawerDialog = null;
+                }
+            });
+        }
     }
 }
 
 // CMake dependency tracking test - Wed Nov  5 22:27:13 EET 2025
+

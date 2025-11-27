@@ -25,10 +25,14 @@ endif()
 
 
 # OpenSSL for secp256k1 ECDH
-# For Android, we use manually provided paths instead of find_package
-if(ANDROID AND OPENSSL_CRYPTO_LIBRARY AND OPENSSL_BUILD_INCLUDE_DIR AND OPENSSL_SOURCE_INCLUDE_DIR)
+# For Android and iOS, we use manually provided paths instead of find_package
+if((ANDROID OR IOS) AND OPENSSL_CRYPTO_LIBRARY AND OPENSSL_BUILD_INCLUDE_DIR AND OPENSSL_SOURCE_INCLUDE_DIR)
     set(OpenSSL_FOUND TRUE)
-    message(STATUS "Using manually provided OpenSSL for Android")
+    if(ANDROID)
+        message(STATUS "Using manually provided OpenSSL for Android")
+    else()
+        message(STATUS "Using manually provided OpenSSL for iOS")
+    endif()
     message(STATUS "  Crypto library: ${OPENSSL_CRYPTO_LIBRARY}")
     message(STATUS "  Build include dir: ${OPENSSL_BUILD_INCLUDE_DIR}")
     message(STATUS "  Source include dir: ${OPENSSL_SOURCE_INCLUDE_DIR}")
@@ -253,13 +257,13 @@ endif()
 
 # Link OpenSSL (if found)
 if(OpenSSL_FOUND)
-    # For Android with manually provided paths, link directly to the library file
-    if(ANDROID AND OPENSSL_CRYPTO_LIBRARY)
+    # For Android and iOS with manually provided paths, link directly to the library file
+    if((ANDROID OR IOS) AND OPENSSL_CRYPTO_LIBRARY)
         message(STATUS "Linking against OpenSSL crypto library: ${OPENSSL_CRYPTO_LIBRARY}")
         target_link_libraries(keycard-qt PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
         
         # Add include directories
-        # For OpenSSL 3.x on Android, we can use source headers directly
+        # For OpenSSL 3.x on Android/iOS, we can use source headers directly
         # The generated build headers are not strictly necessary if using modern OpenSSL
         set(OPENSSL_INCLUDES_AVAILABLE FALSE)
         

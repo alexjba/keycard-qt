@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QEvent>
+#include <QThread>
 #include <QtCore/private/qandroidextras_p.h>
 
 namespace Keycard {
@@ -30,6 +31,7 @@ const QEvent::Type TagDisconnectedEvent::EventType = static_cast<QEvent::Type>(Q
 // Static members
 QJniObject KeycardChannelAndroidNfc::s_activeIsoDep;
 bool KeycardChannelAndroidNfc::s_connected = false;
+QString KeycardChannelAndroidNfc::s_currentCardUID;
 
 // Global callback for NFC intents
 static KeycardChannelAndroidNfc* s_activeAndroidNfcBackend = nullptr;
@@ -40,7 +42,7 @@ static void registerJniMethods();
 KeycardChannelAndroidNfc::KeycardChannelAndroidNfc(QObject* parent)
     : KeycardChannelBackend(parent)
 {
-    qDebug() << "KeycardChannelAndroidNfc: Constructor";
+    qDebug() << "KeycardChannelAndroidNfc::KeycardChannelAndroidNfc()";
 
     // Register this instance as the active backend
     s_activeAndroidNfcBackend = this;
@@ -48,13 +50,21 @@ KeycardChannelAndroidNfc::KeycardChannelAndroidNfc(QObject* parent)
     // Register JNI native methods for KeycardNfcReader callbacks
     registerJniMethods();
 
-    setupNfcAdapter();
+    // Get SINGLETON KeycardNfcReader instance
+    m_readerCallback = QJniObject::callStaticObjectMethod(
+        "im/status/keycard/android/KeycardNfcReader",
+        "getInstance",
+        "()Lim/status/keycard/android/KeycardNfcReader;"
+    );
+
+    if (!m_readerCallback.isValid()) {
+        qWarning() << "KeycardChannelAndroidNfc: Could not get singleton KeycardNfcReader";
+        return;
+    }
 }
 
 static void registerJniMethods()
 {
-    qDebug() << "KeycardChannelAndroidNfc: Registering JNI native methods";
-
     JNINativeMethod methods[] = {
         {
             const_cast<char*>("onNativeTagConnected"),
@@ -71,12 +81,12 @@ static void registerJniMethods()
     QJniEnvironment env;
     jclass clazz = env->FindClass("im/status/keycard/android/KeycardNfcReader");
     if (!clazz) {
-        qWarning() << "❌ Could not find KeycardNfcReader class!";
+        qWarning() << "KeycardChannelAndroidNfc: Could not find KeycardNfcReader class";
         return;
     }
 
     if (env->RegisterNatives(clazz, methods, 2) < 0) {
-        qWarning() << "❌ Failed to register JNI native methods!";
+        qWarning() << "KeycardChannelAndroidNfc: Failed to register JNI native methods";
         if (env->ExceptionCheck()) {
             env->ExceptionDescribe();
             env->ExceptionClear();
@@ -90,26 +100,33 @@ static void registerJniMethods()
 
 KeycardChannelAndroidNfc::~KeycardChannelAndroidNfc()
 {
-    qDebug() << "KeycardChannelAndroidNfc: Destructor";
+    qDebug() << "KeycardChannelAndroidNfc::~KeycardChannelAndroidNfc()";
 
-    // CRITICAL: Call destroy() on Java object first to stop monitoring and clear nativePtr
-    // This prevents crashes from late JNI callbacks
+    // SINGLETON ARCHITECTURE:
+    // - Global singleton KeycardNfcReader stays alive
+    // - Reader mode stays enabled for the app's lifetime
+    // - Unregister backend if still registered (in case stopDetection() wasn't called)
+    
+    // 1. Ensure backend is unregistered (idempotent - safe to call even if not registered)
     if (m_readerCallback.isValid()) {
-        qDebug() << "KeycardChannelAndroidNfc: Calling destroy() on Java KeycardNfcReader";
-        m_readerCallback.callMethod<void>("destroy", "()V");
+        jlong nativePtr = reinterpret_cast<jlong>(this);
+        try {
+            m_readerCallback.callMethod<void>("unregisterBackend", "(J)V", nativePtr);
+        } catch (...) {
+            // Ignore exceptions
+        }
     }
-
-    // Unregister this instance if it's the active one
+    
+    // 2. Clear our reference to the singleton (but don't destroy it!)
+    // The singleton lives on for other backends
+    m_readerCallback = QJniObject();
+    
+    s_activeIsoDep = QJniObject();
+    s_connected = false;
+    
+    // 5. Unregister this instance
     if (s_activeAndroidNfcBackend == this) {
         s_activeAndroidNfcBackend = nullptr;
-    }
-
-    stopDetection();
-
-    if (s_connected && s_activeIsoDep.isValid()) {
-        s_activeIsoDep.callMethod<void>("close");
-        s_activeIsoDep = QJniObject();
-        s_connected = false;
     }
 }
 
@@ -119,7 +136,6 @@ bool KeycardChannelAndroidNfc::event(QEvent* e)
     if (e->type() == TagConnectedEvent::EventType) {
         TagConnectedEvent* tce = static_cast<TagConnectedEvent*>(e);
         emit targetDetected(tce->uid);
-        emit cardDetected(tce->uid);
         return true;
     } else if (e->type() == TagDisconnectedEvent::EventType) {
         emit cardRemoved();
@@ -131,48 +147,181 @@ bool KeycardChannelAndroidNfc::event(QEvent* e)
 
 bool KeycardChannelAndroidNfc::isAvailable() const
 {
-    if (!m_nfcAdapter.isValid()) {
+    // Check NFC availability via Android NFC API
+    QJniObject context = QJniObject::callStaticObjectMethod(
+        "org/qtproject/qt/android/QtNative",
+        "getContext",
+        "()Landroid/content/Context;"
+    );
+
+    if (!context.isValid()) {
         return false;
     }
 
-    jboolean nfcEnabled = m_nfcAdapter.callMethod<jboolean>("isEnabled");
+    QJniObject nfcAdapter = QJniObject::callStaticObjectMethod(
+        "android/nfc/NfcAdapter",
+        "getDefaultAdapter",
+        "(Landroid/content/Context;)Landroid/nfc/NfcAdapter;",
+        context.object<jobject>()
+    );
+
+    if (!nfcAdapter.isValid()) {
+        return false; // NFC not available on this device
+    }
+
+    jboolean nfcEnabled = nfcAdapter.callMethod<jboolean>("isEnabled");
     return nfcEnabled;
 }
 
 void KeycardChannelAndroidNfc::startDetection()
 {
-    qDebug() << "KeycardChannelAndroidNfc: Starting NFC detection with enableReaderMode()";
+    qDebug() << "KeycardChannelAndroidNfc::startDetection()";
 
     if (!isAvailable()) {
         qWarning() << "KeycardChannelAndroidNfc: NFC not available";
         return;
     }
 
-    enableReaderMode();
+    if (!m_readerCallback.isValid()) {
+        qWarning() << "KeycardChannelAndroidNfc: Singleton not available";
+        return;
+    }
+
+    // Enable reader mode
+    // Pass Activity from Qt (Java will register lifecycle callbacks on first call)
+    try {
+        auto context = QNativeInterface::QAndroidApplication::context();
+        QJniObject activity = context.isValid() ? QJniObject(context) : QJniObject();
+        
+        if (activity.isValid()) {
+            m_readerCallback.callMethod<void>("enableReaderMode", "(Landroid/app/Activity;)V", activity.object());
+        } else {
+            m_readerCallback.callMethod<void>("enableReaderMode", "(Landroid/app/Activity;)V", nullptr);
+        }
+    } catch (...) {
+        qWarning() << "KeycardChannelAndroidNfc: Exception enabling reader mode";
+    }
+
+    // Register this backend with the singleton to START receiving NFC events
+    jlong nativePtr = reinterpret_cast<jlong>(this);
+    
+    try {
+        m_readerCallback.callMethod<void>("registerBackend", "(J)V", nativePtr);
+    } catch (...) {
+        qWarning() << "KeycardChannelAndroidNfc: Exception calling registerBackend()";
+    }
 }
 
 void KeycardChannelAndroidNfc::stopDetection()
 {
-    qDebug() << "KeycardChannelAndroidNfc: Stopping NFC detection";
+    qDebug() << "KeycardChannelAndroidNfc::stopDetection()";
 
-    disableReaderMode();
+    if (!m_readerCallback.isValid()) {
+        return;
+    }
 
-    qDebug() << "KeycardChannelAndroidNfc: NFC detection stopped";
+    // Unregister this backend from the singleton to STOP receiving NFC events
+    jlong nativePtr = reinterpret_cast<jlong>(this);
+    
+    try {
+        m_readerCallback.callMethod<void>("unregisterBackend", "(J)V", nativePtr);
+    } catch (...) {
+        // Ignore exceptions
+    }
+    
+    // Clear virtual session state (allow re-detection of same card when we restart)
+    s_currentCardUID.clear();
 }
 
 void KeycardChannelAndroidNfc::disconnect()
 {
-    qDebug() << "KeycardChannelAndroidNfc: Disconnecting from card";
+    qDebug() << "KeycardChannelAndroidNfc::disconnect()";
 
-    if (s_connected && s_activeIsoDep.isValid()) {
+    if (s_connected && m_readerCallback.isValid()) {
         try {
-            s_activeIsoDep.callMethod<void>("close");
+            // Call Java KeycardNfcReader.disconnect() which:
+            // 1. Closes IsoDep connection
+            // 2. Stops tag presence monitoring
+            // 3. Disables reader mode (allows fresh detection on forceScan())
+            m_readerCallback.callMethod<void>("disconnect", "()V");
         } catch (const std::exception& e) {
-            qWarning() << "KeycardChannelAndroidNfc: Error closing connection:" << e.what();
+            qWarning() << "KeycardChannelAndroidNfc: Error calling disconnect():" << e.what();
+        } catch (...) {
+            qWarning() << "KeycardChannelAndroidNfc: Unknown error calling disconnect()";
         }
+        
         s_activeIsoDep = QJniObject();
         s_connected = false;
-        emit cardRemoved();
+        
+        // DON'T clear s_currentCardUID here - matches iOS behavior!
+        // iOS keeps virtual session across disconnect() to enable auto-recovery.
+        // Virtual session is only cleared on physical removal or stopDetection().
+        
+        // DON'T emit cardRemoved() here!
+        // cardRemoved should only be emitted when the card is physically removed
+        // (detected by monitoring thread), not during programmatic disconnect
+    }
+}
+
+void KeycardChannelAndroidNfc::forceScan()
+{
+    qDebug() << "KeycardChannelAndroidNfc::forceScan()";
+    
+    // Clear virtual session state to allow re-detection of the same card
+    s_currentCardUID.clear();
+    
+    // Call Java singleton to manually trigger a new tag detection event
+    // This is needed because if the card is still in the NFC field,
+    // Android won't automatically fire onTagDiscovered again
+    if (m_readerCallback.isValid()) {
+        try {
+            m_readerCallback.callMethod<void>("forceScan", "()V");
+        } catch (...) {
+            qWarning() << "KeycardChannelAndroidNfc: Exception calling Java forceScan()";
+        }
+    } else {
+        qWarning() << "KeycardChannelAndroidNfc: Singleton not available, cannot trigger manual re-detection";
+    }
+}
+
+void KeycardChannelAndroidNfc::setState(ChannelState state)
+{
+    qDebug() << "KeycardChannelAndroidNfc::setState() state:" << static_cast<int>(state);
+    
+    ChannelState oldState = m_state;
+    m_state = state;
+    
+    // Android: Handle state transitions that require connection management
+    switch (state) {
+        case ChannelState::UserInput:
+            // User input required (e.g., entering mnemonic, PIN in UI)
+            // Disconnect card so OS timeout doesn't fire unexpected tagDisconnected()
+            // Card will be re-detected when user completes input and flow resumes
+            if (isConnected()) {
+                disconnect();
+            }
+            break;
+            
+        case ChannelState::Idle:
+            // Flow completed or cancelled
+            // Disconnect and stop detection to save battery
+            if (isConnected()) {
+                disconnect();
+            }
+            break;
+            
+        case ChannelState::WaitingForCard:
+            // Flow waiting for card (re)detection
+            // Ensure reader mode is active
+            if (!isConnected()) {
+                startDetection();
+            }
+            break;
+            
+        case ChannelState::CardPresent:
+            // Card is present and connected
+            // No action needed - keep connection active
+            break;
     }
 }
 
@@ -183,12 +332,17 @@ QString KeycardChannelAndroidNfc::backendName() const
 
 QByteArray KeycardChannelAndroidNfc::transmit(const QByteArray& apdu)
 {
+    // Check IsoDep connection
     if (!s_connected || !s_activeIsoDep.isValid()) {
-        qWarning() << "KeycardChannelAndroidNfc: Not connected to IsoDep";
-        return QByteArray();
+        qWarning() << "KeycardChannelAndroidNfc: Not connected to IsoDep after forceScan";
+        // Return error APDU or handle failure
+        QByteArray errorResponse;
+        errorResponse.append(static_cast<char>(0x6A));
+        errorResponse.append(static_cast<char>(0x87)); // Card not detected
+        return errorResponse;
     }
 
-    qDebug() << "KeycardChannelAndroidNfc: Transmitting APDU (" << apdu.size() << " bytes):" << apdu.toHex();
+    qDebug() << "KeycardChannelAndroidNfc::transmit() size:" << apdu.size();
 
     try {
         QJniEnvironment env;
@@ -208,11 +362,10 @@ QByteArray KeycardChannelAndroidNfc::transmit(const QByteArray& apdu)
         env->DeleteLocalRef(apduArray);
 
         if (!responseArray.isValid()) {
-            qWarning() << "KeycardChannelAndroidNfc: Transceive failed";
-            s_activeIsoDep.callMethod<void>("close");
+            qWarning() << "KeycardChannelAndroidNfc: Transceive failed (card may have been removed)";
+            // s_activeIsoDep.callMethod<void>("close");
             s_activeIsoDep = QJniObject();
             s_connected = false;
-            emit cardRemoved();
             return QByteArray();
         }
 
@@ -247,10 +400,10 @@ void KeycardChannelAndroidNfc::onTagDiscovered(const QJniObject& tag)
 {
     qDebug() << "KeycardChannelAndroidNfc: Tag discovered";
 
-    if (s_connected) {
-        qDebug() << "KeycardChannelAndroidNfc: Already connected, ignoring new tag";
-        return;
-    }
+    // if (s_connected) {
+    //     qDebug() << "KeycardChannelAndroidNfc: Already connected, ignoring new tag";
+    //     return;
+    // }
 
     connectToIsoDep(tag);
 }
@@ -296,34 +449,8 @@ bool KeycardChannelAndroidNfc::checkForNfcIntent(const QJniObject& intent)
     return false;
 }
 
-void KeycardChannelAndroidNfc::setupNfcAdapter()
-{
-    qDebug() << "KeycardChannelAndroidNfc: Setting up NFC adapter";
-
-    // Get the Android context
-    QJniObject context = QJniObject::callStaticObjectMethod("org/qtproject/qt/android/QtNative",
-                                                           "getContext",
-                                                           "()Landroid/content/Context;");
-
-    if (!context.isValid()) {
-        qWarning() << "KeycardChannelAndroidNfc: Could not get Android context";
-        return;
-    }
-
-    // Get default NFC adapter using NfcAdapter.getDefaultAdapter(Context)
-    // This is the React Native approach!
-    m_nfcAdapter = QJniObject::callStaticObjectMethod(
-        "android/nfc/NfcAdapter",
-        "getDefaultAdapter",
-        "(Landroid/content/Context;)Landroid/nfc/NfcAdapter;",
-        context.object<jobject>()
-    );
-
-    if (!m_nfcAdapter.isValid()) {
-        qWarning() << "KeycardChannelAndroidNfc: NFC not available on this device";
-        return;
-    }
-}
+// REMOVED: setupNfcAdapter()
+// No longer needed with SINGLETON architecture - the singleton handles NFC adapter access
 
 void KeycardChannelAndroidNfc::connectToIsoDep(const QJniObject& tag)
 {
@@ -343,21 +470,6 @@ void KeycardChannelAndroidNfc::connectToIsoDep(const QJniObject& tag)
     }
 
     try {
-        // Connect to the tag
-        isoDep.callMethod<void>("connect");
-        qDebug() << "KeycardChannelAndroidNfc: Connected to IsoDep";
-
-        // Set timeout to 120 seconds (matching React Native)
-        isoDep.callMethod<void>("setTimeout", "(I)V", 120000);
-        qDebug() << "KeycardChannelAndroidNfc: Timeout set to 120 seconds";
-
-        // Check capabilities
-        bool supportsExtended = isoDep.callMethod<jboolean>("isExtendedLengthApduSupported");
-        qDebug() << "KeycardChannelAndroidNfc: Extended APDU supported:" << supportsExtended;
-
-        int maxLength = isoDep.callMethod<jint>("getMaxTransceiveLength");
-        qDebug() << "KeycardChannelAndroidNfc: Max transceive length:" << maxLength << "bytes";
-
         // Store the connection
         s_activeIsoDep = isoDep;
         s_connected = true;
@@ -376,7 +488,6 @@ void KeycardChannelAndroidNfc::connectToIsoDep(const QJniObject& tag)
             qDebug() << "KeycardChannelAndroidNfc: Tag UID:" << uidHex;
 
             emit targetDetected(uidHex);
-            emit cardDetected(uidHex);
         }
 
     } catch (const std::exception& e) {
@@ -444,68 +555,9 @@ void KeycardChannelAndroidNfc::handleMultiFrameResponse(QByteArray& response)
     }
 }
 
-void KeycardChannelAndroidNfc::enableReaderMode()
-{
-    qDebug() << "KeycardChannelAndroidNfc: Enabling reader mode (React Native style)";
-
-    // Get the Android activity
-    QJniObject activity = QJniObject::callStaticObjectMethod("org/qtproject/qt/android/QtNative",
-                                                             "activity",
-                                                             "()Landroid/app/Activity;");
-
-    if (!activity.isValid()) {
-        qWarning() << "KeycardChannelAndroidNfc: Could not get Android activity";
-        return;
-    }
-
-    // Create KeycardNfcReader instance (our Java callback class)
-    // Pass 'this' pointer to Java so callbacks can find us
-    jlong nativePtr = reinterpret_cast<jlong>(this);
-    m_readerCallback = QJniObject("im/status/keycard/android/KeycardNfcReader",
-                                 "(J)V",
-                                 nativePtr);
-
-    if (!m_readerCallback.isValid()) {
-        qWarning() << "KeycardChannelAndroidNfc: Could not create KeycardNfcReader";
-        return;
-    }
-
-    // Get NFC flags constants
-    // FLAG_READER_NFC_A = 0x1
-    // FLAG_READER_SKIP_NDEF_CHECK = 0x80
-    jint flags = 0x1 | 0x80;  // NFC-A + SKIP_NDEF_CHECK (matching React Native)
-
-    // Enable reader mode with our callback
-    // void enableReaderMode(Activity activity, ReaderCallback callback, int flags, Bundle extras)
-    m_nfcAdapter.callMethod<void>("enableReaderMode",
-                                 "(Landroid/app/Activity;Landroid/nfc/NfcAdapter$ReaderCallback;ILandroid/os/Bundle;)V",
-                                 activity.object<jobject>(),
-                                 m_readerCallback.object<jobject>(),
-                                 flags,
-                                 nullptr);  // No extras
-}
-
-void KeycardChannelAndroidNfc::disableReaderMode()
-{
-    qDebug() << "KeycardChannelAndroidNfc: Disabling reader mode";
-
-    if (!m_nfcAdapter.isValid()) {
-        return;
-    }
-
-    // Get the Android activity
-    QJniObject activity = QJniObject::callStaticObjectMethod("org/qtproject/qt/android/QtNative",
-                                                             "activity",
-                                                             "()Landroid/app/Activity;");
-
-    if (activity.isValid()) {
-        m_nfcAdapter.callMethod<void>("disableReaderMode",
-                                     "(Landroid/app/Activity;)V",
-                                     activity.object<jobject>());
-    }
-
-    m_readerCallback = QJniObject();
-}
+// REMOVED: Old per-backend enableReaderMode() and disableReaderMode()
+// These are no longer needed with the SINGLETON architecture.
+// The singleton KeycardNfcReader handles reader mode globally.
 
 // JNI callback implementations
 void KeycardChannelAndroidNfc::onJavaTagConnected(JNIEnv* env, jobject thiz, jlong nativePtr, jobject isoDep)
@@ -533,16 +585,11 @@ void KeycardChannelAndroidNfc::onJavaTagConnected(JNIEnv* env, jobject thiz, jlo
         return;
     }
 
-    // Store the IsoDep object globally
-    s_activeIsoDep = QJniObject(isoDep);
-    s_connected = true;
-
-    // Create a temporary tag object (we only need IsoDep, so create a minimal Tag)
-    // Actually, we don't need the Tag at all - we already have IsoDep!
-    // Just emit the signals directly
-
-    // Get tag UID
-    QJniObject tagId = s_activeIsoDep.callObjectMethod("getTag", "()Landroid/nfc/Tag;");
+    // Get new tag UID BEFORE updating s_activeIsoDep
+    QJniObject newIsoDep(isoDep);
+    QJniObject tagId = newIsoDep.callObjectMethod("getTag", "()Landroid/nfc/Tag;");
+    QString newUidHex;
+    
     if (tagId.isValid()) {
         QJniObject actualTag = tagId;
         QJniObject uidBytes = actualTag.callObjectMethod("getId", "()[B");
@@ -556,14 +603,24 @@ void KeycardChannelAndroidNfc::onJavaTagConnected(JNIEnv* env, jobject thiz, jlo
             QByteArray uid((const char*)uidData, uidLength);
             jniEnv->ReleaseByteArrayElements(jUid, uidData, JNI_ABORT);
             
-            QString uidHex = uid.toHex();
-            
-            // IMPORTANT: Marshal signal emission to Qt thread!
-            // JNI callbacks happen on Java/Android threads, not Qt threads.
-            // Post a custom event to the Qt event loop - this is guaranteed thread-safe.
-            QCoreApplication::postEvent(self, new TagConnectedEvent(uidHex));
+            newUidHex = uid.toHex();
         }
     }
+    
+    if (newUidHex.isEmpty()) {
+        qWarning() << "⚠️ Failed to get tag UID, ignoring connection";
+        return;
+    }
+
+    // Store new IsoDep and UID
+    s_activeIsoDep = newIsoDep;
+    s_connected = true;
+    s_currentCardUID = newUidHex;
+    
+    // Emit targetDetected
+    QMetaObject::invokeMethod(self, [self, newUidHex]() {
+        emit self->targetDetected(newUidHex);
+    }, Qt::QueuedConnection);
 }
 
 void KeycardChannelAndroidNfc::onJavaTagDisconnected(JNIEnv* env, jobject thiz, jlong nativePtr)
@@ -573,14 +630,14 @@ void KeycardChannelAndroidNfc::onJavaTagDisconnected(JNIEnv* env, jobject thiz, 
 
     // CRITICAL: Check if nativePtr is 0 (object destroyed in Java)
     if (nativePtr == 0) {
-        qWarning() << "⚠️ nativePtr is 0 in onJavaTagDisconnected, object was destroyed";
+        qWarning() << "KeycardChannelAndroidNfc nativePtr is 0 in onJavaTagDisconnected, object was destroyed";
         return;
     }
 
     // Convert nativePtr back to C++ object
     KeycardChannelAndroidNfc* self = reinterpret_cast<KeycardChannelAndroidNfc*>(nativePtr);
     if (!self) {
-        qWarning() << "❌ Invalid nativePtr in onJavaTagDisconnected!";
+        qWarning() << "KeycardChannelAndroidNfc Invalid nativePtr in onJavaTagDisconnected!";
         return;
     }
 
@@ -591,12 +648,11 @@ void KeycardChannelAndroidNfc::onJavaTagDisconnected(JNIEnv* env, jobject thiz, 
         return;
     }
 
+    qDebug() << "KeycardChannelAndroidNfc Android: IsoDep closed (OS timeout or physical removal)";
+    qDebug() << "KeycardChannelAndroidNfc Keeping virtual session alive for silent recovery";
     s_activeIsoDep = QJniObject();
     s_connected = false;
-
-    // IMPORTANT: Marshal signal emission to Qt thread (same reason as onJavaTagConnected)
-    // Post a custom event to the Qt event loop - this is guaranteed thread-safe.
-    QCoreApplication::postEvent(self, new TagDisconnectedEvent());
 }
 
 } // namespace Keycard
+

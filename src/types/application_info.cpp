@@ -168,7 +168,7 @@ ApplicationInfo parseApplicationInfo(const QByteArray& data) {
     
     // Capabilities (0x8D) - if not present, assume all
     // Note: We're not implementing this fully yet
-    
+
     return info;
 }
 

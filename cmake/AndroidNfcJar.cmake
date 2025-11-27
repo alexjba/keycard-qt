@@ -84,6 +84,14 @@ add_custom_target(android-nfc-jar ALL
     COMMENT "Android NFC JAR is up to date"
 )
 
+# CRITICAL: Make keycard-qt depend on the JAR being built first
+# This ensures the JAR is published to Maven Local BEFORE the library is built
+# Note: status-keycard-qt dependency is added in its own CMakeLists.txt
+if(TARGET keycard-qt)
+    add_dependencies(keycard-qt android-nfc-jar)
+    message(STATUS "  Added dependency: keycard-qt -> android-nfc-jar")
+endif()
+
 # Install the JAR to share directory
 install(FILES ${ANDROID_NFC_JAR_OUTPUT}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/keycard-qt

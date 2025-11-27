@@ -48,6 +48,7 @@ KeycardChannelPcsc::KeycardChannelPcsc(QObject* parent)
     , m_firstReaderCheck(true)
 {
     qDebug() << "KeycardChannelPcsc: Initialized with event-driven detection (Desktop smart card reader)";
+    startDetection()
 }
 
 KeycardChannelPcsc::~KeycardChannelPcsc()
@@ -618,7 +619,6 @@ void KeycardChannelPcsc::detectionLoop()
                         qDebug() << "KeycardChannelPcsc: New card UID:" << uid;
                         m_lastDetectedUid = uid;
                         emit targetDetected(uid);
-                        emit cardDetected(uid);  // Legacy signal
                     }
                     
                     // Phase 2: Watch for card removal
@@ -728,6 +728,18 @@ void KeycardChannelPcsc::detectionLoop()
 void KeycardChannelPcsc::disconnect()
 {
     disconnectFromCard();
+}
+
+void KeycardChannelPcsc::setState(ChannelState state)
+{
+    // PC/SC: State transitions are mostly no-ops since we have continuous detection
+    // Just log the state change for debugging
+    qDebug() << "KeycardChannelPcsc: setState() called, transition:" << static_cast<int>(m_state) 
+             << "→" << static_cast<int>(state);
+    m_state = state;
+    
+    // PC/SC continuously detects cards, so state changes don't affect detection behavior
+    // This is different from iOS which needs explicit session management
 }
 
 QByteArray KeycardChannelPcsc::transmit(const QByteArray& apdu)

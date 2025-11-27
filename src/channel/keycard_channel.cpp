@@ -186,6 +186,43 @@ QString KeycardChannel::backendName() const
     return "None";
 }
 
+bool KeycardChannel::requestCardAtStartup()
+{
+    if (!m_backend) {
+        qWarning() << "KeycardChannel: No backend available for requestCardAtStartup";
+        return false;
+    }
+    
+    // iOS/Android: Use runtime check to access platform-specific method
+#if defined(KEYCARD_BACKEND_QT_NFC)
+    // Try to cast to KeycardChannelQtNfc to access iOS/Android-specific method
+    auto* qtNfcBackend = dynamic_cast<KeycardChannelQtNfc*>(m_backend);
+    if (qtNfcBackend) {
+        qDebug() << "KeycardChannel: Calling Qt NFC backend requestCardAtStartup()";
+        return qtNfcBackend->requestCardAtStartup();
+    }
+#endif
+    
+    // For PC/SC backend, this is a no-op - card detection runs in background
+    qDebug() << "KeycardChannel: PC/SC backend - no startup initialization required";
+    return true;
+}
+
+void KeycardChannel::setState(ChannelState state)
+{
+    if (m_backend) {
+        m_backend->setState(state);
+    }
+}
+
+ChannelState KeycardChannel::state() const
+{
+    if (m_backend) {
+        return m_backend->state();
+    }
+    return ChannelState::Idle;
+}
+
 QByteArray KeycardChannel::transmit(const QByteArray& apdu)
 {
     if (!m_backend) {

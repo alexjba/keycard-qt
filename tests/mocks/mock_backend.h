@@ -48,6 +48,9 @@ public:
     QByteArray transmit(const QByteArray& apdu) override;
     QString backendName() const override { return "Mock Backend"; }
     void setPollingInterval(int intervalMs) override { m_pollingInterval = intervalMs; }
+    bool requestCardAtStartup() override { return true; } // No-op for mock
+    void setState(ChannelState state) override { m_state = state; }
+    ChannelState state() const override { return m_state; }
 
     // ========================================================================
     // Configuration Methods
@@ -171,6 +174,7 @@ private:
     QString m_cardUid;
     int m_pollingInterval;
     bool m_logApdu;
+    ChannelState m_state = ChannelState::Idle;
 
     // Response queue
     QQueue<QByteArray> m_responseQueue;

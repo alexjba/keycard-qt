@@ -66,6 +66,7 @@ ApplicationStatus parseApplicationStatus(const QByteArray& data)
         i += tagLen;
     }
     
+    status.valid = true;
     return status;
 }
 

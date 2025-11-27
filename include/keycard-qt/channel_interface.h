@@ -27,6 +27,17 @@ public:
      * @return true if connected, false otherwise
      */
     virtual bool isConnected() const = 0;
+
+    /**
+     * @brief Force immediate re-scan for cards
+     * 
+     * Triggers an immediate re-scan for cards. Useful after operations
+     * that change card state (e.g., initialization, factory reset).
+     * Only supported by backends that implement forceScan().
+     * 
+     * Default implementation does nothing (for backends that don't support it).
+     */
+    virtual void forceScan() {}
 };
 
 } // namespace Keycard

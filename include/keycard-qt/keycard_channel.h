@@ -1,6 +1,7 @@
 #pragma once
 
 #include "channel_interface.h"
+#include "backends/keycard_channel_backend.h"  // For ChannelState enum
 #include <QObject>
 #include <QString>
 #include <QByteArray>
@@ -98,7 +99,7 @@ public:
      * that change card state (e.g., initialization, factory reset).
      * Only supported by backends that implement forceScan().
      */
-    void forceScan();
+    void forceScan() override;
     
     /**
      * @brief Disconnect from current target
@@ -119,6 +120,43 @@ public:
      * @return Human-readable backend name (e.g., "PC/SC", "Qt NFC")
      */
     QString backendName() const;
+    
+    /**
+     * @brief Get the underlying backend instance
+     * @return Pointer to the backend implementation
+     * 
+     * Allows access to platform-specific backend features.
+     * Useful for iOS-specific NFC session management.
+     */
+    KeycardChannelBackend* backend() const { return m_backend; }
+    
+    /**
+     * @brief Request card at app startup for initialization
+     * 
+     * iOS: Proactively shows NFC drawer and waits for first card tap.
+     * This initializes the app with card metadata. After this, card
+     * stays "connected" for subsequent operations (persistent card model).
+     * 
+     * Android/PC/SC: No-op (card detection already running in background).
+     * 
+     * @return true if card was detected, false on timeout/error
+     */
+    bool requestCardAtStartup();
+    
+    /**
+     * @brief Set the channel state for lifecycle management
+     * @param state The desired channel state
+     * 
+     * Forwards the state change to the backend implementation.
+     * See KeycardChannelBackend::setState() for details.
+     */
+    void setState(ChannelState state);
+    
+    /**
+     * @brief Get the current channel state
+     * @return Current state
+     */
+    ChannelState state() const;
     
     // IChannel interface implementation
     /**

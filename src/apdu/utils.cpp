@@ -127,26 +127,18 @@ QByteArray Utils::unpad(const QByteArray& paddedData)
         return paddedData;
     }
     
-    qDebug() << "🔍 Utils::unpad: Input size:" << paddedData.size() << "bytes";
-    qDebug() << "🔍 Utils::unpad: Input hex:" << paddedData.toHex();
-    
     // Find the 0x80 byte from the end
     int i = paddedData.size() - 1;
     while (i >= 0 && static_cast<uint8_t>(paddedData[i]) == 0x00) {
         i--;
     }
-    
-    qDebug() << "🔍 Utils::unpad: Last non-zero byte index:" << i << "value:" << QString("0x%1").arg(static_cast<uint8_t>(paddedData[i]), 2, 16, QChar('0'));
-    
+        
     if (i >= 0 && static_cast<uint8_t>(paddedData[i]) == 0x80) {
         QByteArray result = paddedData.left(i);
-        qDebug() << "🔍 Utils::unpad: Found padding byte 0x80, unpadded size:" << result.size();
-        qDebug() << "🔍 Utils::unpad: Unpadded hex:" << result.toHex();
         return result;
     }
     
     // No valid padding found, return as-is
-    qDebug() << "🔍 Utils::unpad: No valid padding found, returning as-is";
     return paddedData;
 }
 

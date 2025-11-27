@@ -2,24 +2,50 @@
 
 #include "types.h"
 #include "types_parser.h"
-#include "channel_interface.h"
 #include "secure_channel.h"
+#include "pairing_storage.h"
 #include "apdu/command.h"
 #include "apdu/response.h"
+#include "keycard_channel.h"
 #include <memory>
+#include <functional>
+#include <QObject>
 #include <QSharedPointer>
 
 namespace Keycard {
 
 /**
+ * @brief Callback to provide pairing password when needed
+ * 
+ * @param cardInstanceUID The card's instance UID (hex string)
+ * @return Pairing password, or empty string if unavailable/cancelled
+ */
+using PairingPasswordProvider = std::function<QString(const QString& cardInstanceUID)>;
+
+/**
  * @brief High-level command set for Keycard operations
  * 
  * Provides convenient methods for all Keycard APDU commands.
- * Handles secure channel management and response parsing.
+ * Handles secure channel management, automatic pairing, and response parsing.
+ * 
+ * Self-contained design: CommandSet manages its own pairing lifecycle through
+ * dependency injection of storage and credential providers.
  */
-class CommandSet {
+class CommandSet : public QObject {
+    Q_OBJECT
+    
 public:
-    explicit CommandSet(IChannel* channel);
+    /**
+     * @brief Create CommandSet with dependency injection
+     * @param channel Communication channel (required)
+     * @param pairingStorage Optional pairing storage for persistence (null = no storage)
+     * @param passwordProvider Optional callback to get pairing password (null = no auto-pairing)
+     * @param parent QObject parent
+     */
+    explicit CommandSet(std::shared_ptr<Keycard::KeycardChannel> channel, 
+                       std::shared_ptr<IPairingStorage> pairingStorage,
+                       PairingPasswordProvider passwordProvider,
+                       QObject* parent = nullptr);
     ~CommandSet();
     
     // Connection and pairing
@@ -27,7 +53,13 @@ public:
      * @brief Select the Keycard applet
      * @return ApplicationInfo on success
      */
-    ApplicationInfo select();
+    ApplicationInfo select(bool force = false);
+    
+    /**
+     * @brief Get the channel
+     * @return Channel
+     */
+    std::shared_ptr<Keycard::KeycardChannel> channel() const { return m_channel; }
     
     /**
      * @brief Pair with the card using pairing password
@@ -43,6 +75,31 @@ public:
      */
     bool openSecureChannel(const PairingInfo& pairingInfo);
     bool mutualAuthenticate();  // Mutual authentication after opening secure channel
+    
+    /**
+     * @brief Reset secure channel state (iOS: when NFC drawer closes)
+     * Clears cryptographic state but preserves pairing info and authentication status
+     */
+    void resetSecureChannel();
+    
+    /**
+     * @brief Re-establish secure channel after physical session loss (iOS)
+     * Opens secure channel using cached pairing and re-authenticates with cached PIN if needed
+     * @return true on success
+     */
+    bool reestablishSecureChannel();
+    
+    /**
+     * @brief Clear cached authentication state (call at flow end for security)
+     * Clears cached PIN and authentication flag but preserves pairing
+     */
+    void clearAuthenticationCache();
+    
+    /**
+     * @brief Handle card swap (different card detected during flow)
+     * Clears ALL state: secure channel, pairing, authentication, app info
+     */
+    void handleCardSwap();
     
     /**
      * @brief Initialize a new keycard
@@ -241,11 +298,36 @@ public:
      * @brief Get remaining PIN attempts (after failed verifyPIN)
      * @return Remaining attempts, or -1 if not applicable
      */
-    int remainingPINAttempts() const { return m_remainingPINAttempts; }
+    int remainingPINAttempts() const { return m_cachedStatus.pinRetryCount; }
+    
+    /**
+     * @brief Get cached application status
+     * 
+     * Returns cached status fetched after opening secure channel or PIN verification.
+     * This avoids blocking getStatus() calls.
+     * 
+     * @return Cached ApplicationStatus, or default if not available
+     */
+    ApplicationStatus cachedApplicationStatus() const { return m_cachedStatus; }
+    
+    /**
+     * @brief Check if cached status is valid
+     * @return true if status has been cached (secure channel was opened)
+     */
+    bool hasCachedStatus() const { return m_hasCachedStatus; }
+    
+    /**
+     * @brief Wait for card to be present
+     * Checks if card is connected, enables card detection if needed, and waits for card
+     * @param timeoutMs Timeout in milliseconds (default: 60 seconds)
+     * @return true if card detected, false on timeout or error
+     */
+    bool waitForCard(int timeoutMs = 60000);
     
     // Accessors
     ApplicationInfo applicationInfo() const { return m_appInfo; }
     PairingInfo pairingInfo() const { return m_pairingInfo; }
+    std::shared_ptr<IPairingStorage> pairingStorage() const { return m_pairingStorage; }
     
     // Test helpers (for unit testing only - bypasses crypto validation)
     #ifdef KEYCARD_ENABLE_TEST_HELPERS
@@ -274,13 +356,68 @@ private:
     bool checkOK(const APDU::Response& response);
     APDU::Command buildCommand(uint8_t ins, uint8_t p1 = 0, uint8_t p2 = 0, 
                                 const QByteArray& data = QByteArray());
+
+    /**
+     * @brief Ensure secure channel is ready before secure operations
+     * Checks flag and re-establishes if needed (transparent auto-recovery)
+     * @return true on success
+     */
+    bool ensureSecureChannel();
+
+    /**
+     * @brief Send APDU command with automatic precondition management
+     * @param cmd The APDU command to send
+     * @param secure If true, ensures secure channel is open before sending
+     * @return APDU response
+     * 
+     * This method automatically:
+     * - Waits for card if not connected
+     * - Ensures pairing exists (loads or creates)
+     * - Ensures secure channel is open (if secure=true)
+     * - Transmits the command via appropriate channel
+     */
+    APDU::Response send(const APDU::Command& cmd, bool secure = true);
     
-    IChannel* m_channel;
+    /**
+     * @brief Ensure pairing is available for current card
+     * 
+     * Automatic pairing lifecycle:
+     * 1. Check cached pairing (fast path)
+     * 2. Try to load from storage
+     * 3. If missing, attempt to pair (needs password provider)
+     * 4. Save newly created pairing
+     * 
+     * @return true if pairing is available, false otherwise
+     */
+    bool ensurePairing();
+    
+    /**
+     * @brief Internal implementation of waitForCard (must be called from correct thread)
+     * @param timeoutMs Timeout in milliseconds
+     * @return true if card detected, false on timeout
+     */
+    bool waitForCardInternal(int timeoutMs);
+
+    
+    std::shared_ptr<Keycard::KeycardChannel> m_channel;
+    std::shared_ptr<IPairingStorage> m_pairingStorage;  // Injected (can be null)
+    PairingPasswordProvider m_passwordProvider;  // Injected (can be null)
+    
     QSharedPointer<SecureChannel> m_secureChannel;
     ApplicationInfo m_appInfo;
     PairingInfo m_pairingInfo;
+    QString m_cardInstanceUID;  // Current card UID (from select())
+    QString m_targetId;         // Current target ID (from waitForCard())
     QString m_lastError;
-    int m_remainingPINAttempts = -1;
+    
+    // Status caching (matching status-keycard-go behavior)
+    ApplicationStatus m_cachedStatus;  // Cached status from last getStatus() call
+    bool m_hasCachedStatus = false;    // True if m_cachedStatus is valid
+    
+    // iOS: Authentication state tracking for secure channel recovery
+    bool m_wasAuthenticated = false;  // True if verifyPIN succeeded in this flow
+    QString m_cachedPIN;              // Cached PIN for auto-reauth after NFC session loss
+    bool m_needsSecureChannelReestablishment = false;  // Flag: secure channel must be re-opened before next command
 };
 
 } // namespace Keycard

@@ -60,8 +60,7 @@ SecureChannel::~SecureChannel() = default;
 
 bool SecureChannel::generateSecret(const QByteArray& cardPublicKey)
 {
-    qDebug() << "SecureChannel: Generating ECDH secret (secp256k1)";
-    qDebug() << "SecureChannel: Card public key:" << cardPublicKey.toHex();
+    qDebug() << "SecureChannel::generateSecret()";
     
 #ifndef KEYCARD_QT_HAS_OPENSSL
     qWarning() << "SecureChannel: OpenSSL not available, cannot generate ECDH secret";
@@ -122,8 +121,6 @@ bool SecureChannel::generateSecret(const QByteArray& cardPublicKey)
                       pubkey_len, nullptr);
     
     EC_KEY_free(eckey);
-    
-    qDebug() << "SecureChannel: Our public key:" << d->rawPublicKeyData.toHex();
     
     // Step 3: Import card's public key
     EC_KEY* card_eckey = EC_KEY_new_by_curve_name(NID_secp256k1);
@@ -194,19 +191,13 @@ bool SecureChannel::generateSecret(const QByteArray& cardPublicKey)
     
     EVP_PKEY_CTX_free(ctx);
     
-    qDebug() << "SecureChannel: ECDH shared secret computed!" << d->secret.size() << "bytes";
-    qDebug() << "SecureChannel: Secret:" << d->secret.toHex();
-    
     return true;
 #endif
 }
 
 void SecureChannel::init(const QByteArray& iv, const QByteArray& encKey, const QByteArray& macKey)
 {
-    qDebug() << "SecureChannel: Initializing session keys";
-    qDebug() << "SecureChannel: IV:" << iv.toHex();
-    qDebug() << "SecureChannel: Enc key:" << encKey.toHex() << "(" << encKey.size() << "bytes)";
-    qDebug() << "SecureChannel: MAC key:" << macKey.toHex() << "(" << macKey.size() << "bytes)";
+    qDebug() << "SecureChannel::init()";
     
     // Go's DeriveSessionKeys returns encKey (32 bytes) and macKey (32 bytes)
     // Both use AES-256
@@ -215,14 +206,11 @@ void SecureChannel::init(const QByteArray& iv, const QByteArray& encKey, const Q
     d->macKey = macKey;  // Full 32 bytes for AES-256
     d->open = true;
     d->openedIndex = 0;
-    
-    qDebug() << "SecureChannel: Using Enc key:" << d->encKey.toHex();
-    qDebug() << "SecureChannel: Using MAC key:" << d->macKey.toHex();
 }
 
 void SecureChannel::reset()
 {
-    qDebug() << "SecureChannel: Resetting session state (keeping ephemeral keys for pairing)";
+    qDebug() << "SecureChannel::reset()";
     // Clear session keys
     d->iv.clear();
     d->encKey.clear();
@@ -258,18 +246,7 @@ QByteArray SecureChannel::secret() const
 
 APDU::Response SecureChannel::send(const APDU::Command& command)
 {
-    // CRITICAL: Protect IV state from concurrent access by multiple threads
-    // The IV is updated after each command send, and if two threads try to send
-    // commands simultaneously, they will corrupt the IV state, causing the card
-    // to reject commands with errors like 0x6f05 (invalid MAC).
-    // This fixes the bug where PIN verification fails on first attempt when card
-    // is inserted after app startup (UI thread calls getStatus while worker thread
-    // calls verifyPIN, causing IV desynchronization).
     QMutexLocker locker(&m_secureMutex);
-    
-    // Log to verify the fix is applied (shows thread-safe operation)
-    qDebug() << "🔒 SecureChannel: MUTEX PROTECTED send() - Thread:" << QThread::currentThread();
-    qDebug() << "🔒 SecureChannel: IV at start of send():" << d->iv.toHex();
     
     if (!d->open) {
         throw std::runtime_error("Secure channel not open");
@@ -278,15 +255,6 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
     if (!d->channel) {
         throw std::runtime_error("No base channel available");
     }
-
-    // DEBUG: Log the raw command before encryption
-    qDebug() << "SecureChannel: Raw command CLA=" << QString("0x%1").arg(command.cla(), 2, 16, QChar('0'))
-             << "INS=" << QString("0x%1").arg(command.ins(), 2, 16, QChar('0'))
-             << "P1=" << QString("0x%1").arg(command.p1(), 2, 16, QChar('0'))
-             << "P2=" << QString("0x%1").arg(command.p2(), 2, 16, QChar('0'))
-             << "Lc=" << command.data().size()
-             << "Le=" << (command.hasLe() ? QString::number(command.le()) : "none");
-    qDebug() << "SecureChannel: Command data:" << command.data().toHex();
 
     // Encrypt only the command data (not the headers)
     QByteArray encData = encrypt(command.data());
@@ -301,9 +269,9 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
     meta.append(QByteArray(11, 0x00));  // Pad to 16 bytes total
     
     // Update IV with MAC computed over meta and encrypted_data
-    QByteArray oldIV = d->iv;
+    // Store original IV to restore it if transmission fails
+    QByteArray originalIV = d->iv;
     d->iv = calculateMAC(meta, encData);
-    qDebug() << "🔒 SecureChannel: IV updated (BEFORE send):" << oldIV.toHex() << "->" << d->iv.toHex();
     
     // Build new data: [IV][encrypted_data]
     QByteArray newData = d->iv + encData;
@@ -313,54 +281,42 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
     secureCmd.setData(newData);
     if (command.hasLe()) {
         secureCmd.setLe(command.le());
-        qDebug() << "SecureChannel: Preserving Le from command:" << (int)command.le();
-    } else {
-        qDebug() << "SecureChannel: WARNING - Original command has NO Le set!";
     }
     
     // Send through base channel
-    qDebug() << "SecureChannel: Sending encrypted APDU, Le=" << secureCmd.hasLe() << "value=" << (int)secureCmd.le();
-    qDebug() << "SecureChannel: Encrypted APDU:" << secureCmd.serialize().toHex();
-    QByteArray rawResponse = d->channel->transmit(secureCmd.serialize());
-    qDebug() << "SecureChannel: Raw response from card:" << rawResponse.toHex();
+    QByteArray rawResponse;
+    try {
+        rawResponse = d->channel->transmit(secureCmd.serialize());
+    } catch (...) {
+        // CRITICAL: If transmission fails, the card never received the new IV.
+        // We MUST restore our local IV to the previous state, otherwise we will
+        // be permanently desynchronized from the card (we'll encrypt next cmd
+        // with IV_n+1, card expects IV_n).
+        qWarning() << "SecureChannel: Transmission failed, restoring IV to prevent desync";
+        d->iv = originalIV;
+        throw; // Re-throw to let caller handle the error
+    }
+
     APDU::Response response(rawResponse);
     
     uint8_t sw1 = (response.sw() >> 8) & 0xFF;
     uint8_t sw2 = response.sw() & 0xFF;
-    
-    qDebug() << "SecureChannel: Raw SW from card:" << QString("0x%1").arg(response.sw(), 4, 16, QChar('0'));
-    qDebug() << "SecureChannel: SW1:" << QString("0x%1").arg(sw1, 2, 16, QChar('0')) 
-             << "SW2:" << QString("0x%1").arg(sw2, 2, 16, QChar('0'));
-    
-    // Handle multi-frame responses (SW1=0x61 = more data available)
-    if (sw1 == 0x61) {
-        qWarning() << "⚠️⚠️⚠️ SecureChannel: Card indicates MORE DATA AVAILABLE (SW1=0x61)!";
-        qWarning() << "⚠️ Remaining bytes available:" << (int)sw2;
-        qWarning() << "⚠️ Multi-frame response handling NOT IMPLEMENTED - data will be truncated!";
-        qWarning() << "⚠️ This may be why EXPORT_KEY returns only 16 bytes!";
-    }
 
     // Decrypt response if successful
     if (response.isOK() && !response.data().isEmpty()) {
         // Response format: [MAC][encrypted_data]
-        qDebug() << "SecureChannel: Raw response size:" << response.data().size() << "bytes";
-        qDebug() << "SecureChannel: Raw response hex:" << response.data().toHex();
-        
         if (response.data().size() < 16) {
+            // If response is invalid, we are likely desynchronized anyway, 
+            // but technically the card *did* respond, so it updated its IV.
+            // We should probably NOT restore IV here.
             throw std::runtime_error("Response too short");
         }
         
         QByteArray responseMac = response.data().left(16);
         QByteArray responseData = response.data().mid(16);
         
-        qDebug() << "SecureChannel: Encrypted data size:" << responseData.size() << "bytes";
-        qDebug() << "SecureChannel: Encrypted data hex:" << responseData.toHex();
-        
         // Decrypt FIRST using current IV (before MAC calculation updates it)
         QByteArray decrypted = decrypt(responseData);
-        
-        qDebug() << "SecureChannel: Decrypted data size:" << decrypted.size() << "bytes";
-        qDebug() << "SecureChannel: Decrypted data hex:" << decrypted.toHex();
         
         // Now calculate and verify MAC
         // IMPORTANT: rmeta size should include BOTH MAC and data (total response.data().size())
@@ -372,13 +328,13 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
         
         if (calculatedMac != responseMac) {
             qWarning() << "SecureChannel: MAC mismatch!";
+            // MAC mismatch means we are desynchronized or under attack.
+            // Card updated its IV, we updated ours.
             throw std::runtime_error("Response MAC verification failed");
         }
         
         // Update IV for next operation
-        QByteArray prevIV = d->iv;
         d->iv = calculatedMac;
-        qDebug() << "🔒 SecureChannel: IV updated (AFTER recv):" << prevIV.toHex() << "->" << d->iv.toHex();
         
         // CRITICAL FIX: The decrypted response format is [data...][SW1][SW2]
         // The status word is AT THE END of the decrypted data, NOT separate.
@@ -391,7 +347,7 @@ APDU::Response SecureChannel::send(const APDU::Command& command)
 }
 
 QByteArray SecureChannel::encrypt(const QByteArray& plaintext)
-{
+{    
 #ifndef KEYCARD_QT_HAS_OPENSSL
     qWarning() << "SecureChannel: OpenSSL not available, cannot encrypt";
     return plaintext; // Fallback: return unencrypted
@@ -450,7 +406,7 @@ QByteArray SecureChannel::encrypt(const QByteArray& plaintext)
 }
 
 QByteArray SecureChannel::decrypt(const QByteArray& ciphertext)
-{
+{    
 #ifndef KEYCARD_QT_HAS_OPENSSL
     qWarning() << "SecureChannel: OpenSSL not available, cannot decrypt";
     return ciphertext; // Fallback: return as-is
@@ -511,7 +467,7 @@ QByteArray SecureChannel::decrypt(const QByteArray& ciphertext)
 }
 
 QByteArray SecureChannel::oneShotEncrypt(const QByteArray& data)
-{
+{    
 #ifndef KEYCARD_QT_HAS_OPENSSL
     qWarning() << "SecureChannel: OpenSSL not available, cannot perform one-shot encryption";
     return QByteArray();
@@ -522,8 +478,6 @@ QByteArray SecureChannel::oneShotEncrypt(const QByteArray& data)
         return QByteArray();
     }
     
-    qDebug() << "SecureChannel: OneShotEncrypt - input data size:" << data.size();
-    
     // Generate random IV
     QByteArray iv(16, 0);
     if (RAND_bytes(reinterpret_cast<unsigned char*>(iv.data()), 16) != 1) {
@@ -533,7 +487,6 @@ QByteArray SecureChannel::oneShotEncrypt(const QByteArray& data)
     
     // Pad data
     QByteArray padded = APDU::Utils::pad(data, 16);
-    qDebug() << "SecureChannel: OneShotEncrypt - padded size:" << padded.size();
     
     // Encrypt with AES-256-CBC using full 32-byte secret
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -582,9 +535,6 @@ QByteArray SecureChannel::oneShotEncrypt(const QByteArray& data)
     result.append(iv);                                 // 16 bytes: IV
     result.append(encrypted);                          // N bytes: ciphertext
     
-    qDebug() << "SecureChannel: OneShotEncrypt - result size:" << result.size()
-             << "(1 +" << pubKey.size() << "+ 16 +" << encrypted.size() << ")";
-    
     return result;
 #endif
 }
@@ -595,12 +545,7 @@ bool SecureChannel::isOpen() const
 }
 
 QByteArray SecureChannel::calculateMAC(const QByteArray& meta, const QByteArray& data)
-{
-    // This implements keycard-go's CalculateMac function:
-    // Go code: encrypts meta IN-PLACE, then data IN-PLACE with same CBC mode
-    // This means: IV for data encryption = last block of encrypted meta
-    // Extract MAC from second-to-last block of encrypted data
-    
+{    
 #ifndef KEYCARD_QT_HAS_OPENSSL
     qWarning() << "SecureChannel: OpenSSL not available for MAC calculation";
     return QByteArray(16, 0x00);

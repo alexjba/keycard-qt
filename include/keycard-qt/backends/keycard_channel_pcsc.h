@@ -47,6 +47,8 @@ public:
     QByteArray transmit(const QByteArray& apdu) override;
     QString backendName() const override { return "PC/SC"; }
     void setPollingInterval(int intervalMs) override;
+    void setState(ChannelState state) override;
+    ChannelState state() const override { return m_state; }
 
 public slots:
     /**
@@ -119,6 +121,9 @@ private:
     
     // Thread safety - protects transmit() to prevent APDU corruption
     mutable QMutex m_transmitMutex;
+    
+    // Channel state (state-driven architecture)
+    ChannelState m_state = ChannelState::Idle;
 };
 
 } // namespace Keycard

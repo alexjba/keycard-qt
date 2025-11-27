@@ -6,6 +6,11 @@ namespace APDU {
 Response::Response(const QByteArray& rawResponse)
     : m_sw(0)
 {
+    setData(rawResponse);
+}
+
+void Response::setData(const QByteArray& rawResponse)
+{
     if (rawResponse.size() < 2) {
         // Invalid response - should have at least SW1 SW2
         m_sw = 0x6F00; // Unknown error
