@@ -59,29 +59,20 @@ class TestPBKDF2 : public QObject {
 
 private slots:
     void initTestCase() {
-        qDebug() << "Testing PBKDF2-HMAC-SHA256 implementation";
     }
 
     void testBasicDerivation() {
-        qDebug() << "Test: Basic PBKDF2 derivation";
-        
         QString password = "KeycardTest";
         QByteArray token = derivePairingToken(password);
         
         // Should return 32 bytes
         QCOMPARE(token.size(), 32);
         
-        // Should be deterministic (same password -> same token)
         QByteArray token2 = derivePairingToken(password);
         QCOMPARE(token, token2);
-        
-        qDebug() << "   Token:" << token.toHex();
-        qDebug() << "   ✅ Deterministic 32-byte output";
     }
     
     void testDifferentPasswords() {
-        qDebug() << "Test: Different passwords produce different tokens";
-        
         QByteArray token1 = derivePairingToken("password1");
         QByteArray token2 = derivePairingToken("password2");
         QByteArray token3 = derivePairingToken("password3");
@@ -91,30 +82,17 @@ private slots:
         QVERIFY(token1 != token3);
         QVERIFY(token2 != token3);
         
-        qDebug() << "   ✅ Different passwords produce unique tokens";
     }
     
     void testKnownVector() {
-        qDebug() << "Test: Known test vector";
-        
-        // This is the password used in our integration tests
         QString password = "KeycardTest";
         QByteArray token = derivePairingToken(password);
         
-        // Expected value (from successful INIT test)
         QByteArray expected = QByteArray::fromHex("05c6ce68c78760fd529232a37484d942");
-        
-        // Check first 16 bytes match
         QCOMPARE(token.left(16), expected);
-        
-        qDebug() << "   Expected:" << expected.toHex();
-        qDebug() << "   Got:     " << token.left(16).toHex();
-        qDebug() << "   ✅ Matches known vector";
     }
     
     void testEmptyPassword() {
-        qDebug() << "Test: Empty password";
-        
         QByteArray token = derivePairingToken("");
         
         // Should still work (32 bytes)
@@ -124,24 +102,18 @@ private slots:
         QByteArray token2 = derivePairingToken("a");
         QVERIFY(token != token2);
         
-        qDebug() << "   ✅ Handles empty password";
     }
     
     void testLongPassword() {
-        qDebug() << "Test: Long password";
-        
         QString longPass = QString("a").repeated(1000);
         QByteArray token = derivePairingToken(longPass);
         
         // Should still work
         QCOMPARE(token.size(), 32);
         
-        qDebug() << "   ✅ Handles 1000-character password";
     }
     
     void testSpecialCharacters() {
-        qDebug() << "Test: Special characters in password";
-        
         QByteArray token1 = derivePairingToken("password!");
         QByteArray token2 = derivePairingToken("password@");
         QByteArray token3 = derivePairingToken("pässwörd");
@@ -153,12 +125,9 @@ private slots:
         QVERIFY(token1 != token2);
         QVERIFY(token1 != token3);
         
-        qDebug() << "   ✅ Handles special characters and UTF-8";
     }
     
     void testCaseSensitivity() {
-        qDebug() << "Test: Password case sensitivity";
-        
         QByteArray token1 = derivePairingToken("KeycardTest");
         QByteArray token2 = derivePairingToken("keycardtest");
         QByteArray token3 = derivePairingToken("KEYCARDTEST");
@@ -168,32 +137,23 @@ private slots:
         QVERIFY(token1 != token3);
         QVERIFY(token2 != token3);
         
-        qDebug() << "   ✅ Case-sensitive derivation";
     }
     
     void testPerformance() {
-        qDebug() << "Test: Performance (50,000 iterations)";
-        
         QElapsedTimer timer;
         timer.start();
         
         QByteArray token = derivePairingToken("TestPassword");
         
         qint64 elapsed = timer.elapsed();
-        qDebug() << "   Time:" << elapsed << "ms";
-        
-        // Should take reasonable time (less than 5 seconds)
         QVERIFY(elapsed < 5000);
         
         // Verify result is valid
         QCOMPARE(token.size(), 32);
         
-        qDebug() << "   ✅ Completed in" << elapsed << "ms";
     }
     
     void testHexEncoding() {
-        qDebug() << "Test: Hex encoding of output";
-        
         QByteArray token = derivePairingToken("test");
         QString hex = token.toHex();
         
@@ -203,13 +163,9 @@ private slots:
         // Should only contain hex characters
         QRegularExpression hexRegex("^[0-9a-f]{64}$");
         QVERIFY(hexRegex.match(hex).hasMatch());
-        
-        qDebug() << "   Hex:" << hex;
-        qDebug() << "   ✅ Valid hex encoding";
     }
     
     void cleanupTestCase() {
-        qDebug() << "PBKDF2 tests complete";
     }
 };
 

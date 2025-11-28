@@ -28,7 +28,6 @@ class TestSecureChannel : public QObject {
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing SecureChannel";
     }
     
     void testConstruction() {
@@ -133,7 +132,6 @@ private slots:
     }
     
     void cleanupTestCase() {
-        qDebug() << "SecureChannel tests complete";
     }
 };
 

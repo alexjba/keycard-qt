@@ -90,10 +90,9 @@ private slots:
     
     // Test multiple start/stop cycles
     void testMultipleStartStopCycles() {
-        // Note: This will fail if NFC is not available, but shouldn't crash
         for (int i = 0; i < 3; i++) {
             channel->startDetection();
-            QTest::qWait(10);  // Small delay
+            QTRY_VERIFY(channel->backendName().length() > 0);
             channel->stopDetection();
         }
         

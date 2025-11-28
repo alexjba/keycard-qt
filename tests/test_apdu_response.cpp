@@ -11,7 +11,6 @@ class TestAPDUResponse : public QObject {
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing APDU Response";
     }
     
     void testSuccessResponse() {
@@ -117,7 +116,6 @@ private slots:
     }
     
     void cleanupTestCase() {
-        qDebug() << "APDU Response tests complete";
     }
 };
 

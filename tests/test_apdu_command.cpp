@@ -11,7 +11,6 @@ class TestAPDUCommand : public QObject {
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing APDU Command";
     }
     
     void testBasicCommand() {
@@ -111,7 +110,6 @@ private slots:
     }
     
     void cleanupTestCase() {
-        qDebug() << "APDU Command tests complete";
     }
 };
 

@@ -25,15 +25,9 @@ class TestKeycardChannelDI : public QObject {
 
 private slots:
     void initTestCase() {
-        qDebug() << "===========================================";
-        qDebug() << "KeycardChannel Dependency Injection Tests";
-        qDebug() << "===========================================";
     }
 
     void cleanupTestCase() {
-        qDebug() << "===========================================";
-        qDebug() << "DI Tests Complete";
-        qDebug() << "===========================================";
     }
 
     // ========================================================================
@@ -41,27 +35,17 @@ private slots:
     // ========================================================================
 
     void testDefaultConstructor() {
-        qDebug() << "\n--- Test: Default Constructor ---";
-        
-        // Default constructor should create platform backend
         KeycardChannel channel;
         
         // Should not be connected initially
         QVERIFY(!channel.isConnected());
         QVERIFY(channel.targetUid().isEmpty());
         
-        // Should have a backend name
         QString backendName = channel.backendName();
         QVERIFY(!backendName.isEmpty());
-        
-        qDebug() << "Default backend:" << backendName;
-        qDebug() << "✓ Default constructor works";
     }
 
     void testDIConstructor() {
-        qDebug() << "\n--- Test: DI Constructor ---";
-        
-        // Create mock backend
         auto* mock = new MockBackend();
         
         // Inject into channel
@@ -70,16 +54,10 @@ private slots:
         // Should not be connected
         QVERIFY(!channel.isConnected());
         
-        // Should have mock backend
         QCOMPARE(channel.backendName(), QString("Mock Backend"));
-        
-        qDebug() << "Backend:" << channel.backendName();
-        qDebug() << "✓ DI constructor accepts backend";
     }
 
     void testDIConstructorWithParent() {
-        qDebug() << "\n--- Test: DI Constructor with Parent ---";
-        
         QObject parent;
         auto* mock = new MockBackend();
         
@@ -91,13 +69,9 @@ private slots:
         QCOMPARE(channel->backendName(), QString("Mock Backend"));
         
         // Parent will delete channel
-        qDebug() << "✓ DI constructor with parent works";
     }
 
     void testBackendOwnership() {
-        qDebug() << "\n--- Test: Backend Ownership ---";
-        
-        // Backend without parent - channel should take ownership
         {
             auto* mock = new MockBackend();
             QVERIFY(mock->parent() == nullptr);
@@ -107,10 +81,7 @@ private slots:
             // Channel should have adopted mock as child
             QCOMPARE(mock->parent(), &channel);
             
-            // When channel is destroyed, mock should be deleted too
         }
-        
-        // Backend with parent - channel should NOT change ownership
         {
             QObject parent;
             auto* mock = new MockBackend(&parent);
@@ -122,7 +93,6 @@ private slots:
             QCOMPARE(mock->parent(), &parent);
         }
         
-        qDebug() << "✓ Backend ownership management works";
     }
 
     // ========================================================================
@@ -130,8 +100,6 @@ private slots:
     // ========================================================================
 
     void testTargetDetectedSignal() {
-        qDebug() << "\n--- Test: targetDetected Signal Forwarding ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -150,17 +118,11 @@ private slots:
         QString uid = arguments.at(0).toString();
         QVERIFY(!uid.isEmpty());
         
-        // Channel should be connected now
         QVERIFY(channel.isConnected());
         QCOMPARE(channel.targetUid(), uid);
-        
-        qDebug() << "Detected UID:" << uid;
-        qDebug() << "✓ targetDetected signal forwarded correctly";
     }
 
     void testTargetLostSignal() {
-        qDebug() << "\n--- Test: targetLost Signal Forwarding ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -182,12 +144,9 @@ private slots:
         QVERIFY(!channel.isConnected());
         QVERIFY(channel.targetUid().isEmpty());
         
-        qDebug() << "✓ targetLost signal forwarded correctly";
     }
 
     void testErrorSignal() {
-        qDebug() << "\n--- Test: error Signal Forwarding ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -208,7 +167,6 @@ private slots:
         QCOMPARE(receivedMsg, errorMsg);
         
         qDebug() << "Error message:" << receivedMsg;
-        qDebug() << "✓ error signal forwarded correctly";
     }
 
     // ========================================================================
@@ -216,8 +174,6 @@ private slots:
     // ========================================================================
 
     void testStartDetectionWithMock() {
-        qDebug() << "\n--- Test: startDetection with Mock ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -233,12 +189,9 @@ private slots:
         // Mock should have stopped
         QVERIFY(!mock->isDetecting());
         
-        qDebug() << "✓ Detection control works with mock";
     }
 
     void testAutoConnect() {
-        qDebug() << "\n--- Test: Auto-Connect ---";
-        
         auto* mock = new MockBackend();
         mock->setAutoConnect(true);
         
@@ -250,15 +203,12 @@ private slots:
         // Start detection
         channel.startDetection();
         
-        // Wait for auto-connect (mock delays 50ms)
-        QVERIFY(spy.wait(200));
+        QTRY_COMPARE(spy.count(), 1);
         
         // Should be connected
         QVERIFY(channel.isConnected());
         QVERIFY(!channel.targetUid().isEmpty());
         
-        qDebug() << "Auto-connected with UID:" << channel.targetUid();
-        qDebug() << "✓ Auto-connect works";
     }
 
     // ========================================================================
@@ -266,8 +216,6 @@ private slots:
     // ========================================================================
 
     void testTransmitWithMock() {
-        qDebug() << "\n--- Test: transmit() with Mock ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -290,14 +238,9 @@ private slots:
         QCOMPARE(mock->getTransmitCount(), 1);
         QCOMPARE(mock->getLastTransmittedApdu(), apdu);
         
-        qDebug() << "Transmitted:" << apdu.toHex();
-        qDebug() << "Received:" << response.toHex();
-        qDebug() << "✓ Transmission works with mock";
     }
 
     void testTransmitWithoutConnection() {
-        qDebug() << "\n--- Test: transmit() without Connection ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -312,12 +255,9 @@ private slots:
         }
         
         QVERIFY(threw);
-        qDebug() << "✓ transmit() throws when not connected";
     }
 
     void testMultipleTransmissions() {
-        qDebug() << "\n--- Test: Multiple Transmissions ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -338,7 +278,6 @@ private slots:
         // Should have tracked all
         QCOMPARE(mock->getTransmitCount(), 3);
         
-        qDebug() << "✓ Multiple transmissions work";
     }
 
     // ========================================================================
@@ -346,8 +285,6 @@ private slots:
     // ========================================================================
 
     void testDisconnect() {
-        qDebug() << "\n--- Test: disconnect() ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -365,7 +302,6 @@ private slots:
         QCOMPARE(spy.count(), 1);
         QVERIFY(!channel.isConnected());
         
-        qDebug() << "✓ disconnect() works";
     }
 
     // ========================================================================
@@ -373,8 +309,6 @@ private slots:
     // ========================================================================
 
     void testSetPollingInterval() {
-        qDebug() << "\n--- Test: setPollingInterval() ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -388,7 +322,6 @@ private slots:
         channel.setPollingInterval(100);
         QCOMPARE(mock->getPollingInterval(), 100);
         
-        qDebug() << "✓ Polling interval forwarded to backend";
     }
 
     // ========================================================================
@@ -396,8 +329,6 @@ private slots:
     // ========================================================================
 
     void testBackendReset() {
-        qDebug() << "\n--- Test: Backend Reset ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -414,7 +345,6 @@ private slots:
         QVERIFY(!mock->isDetecting());
         QCOMPARE(mock->getTransmitCount(), 0);
         
-        qDebug() << "✓ Backend reset works";
     }
 
     // ========================================================================
@@ -422,8 +352,6 @@ private slots:
     // ========================================================================
 
     void testTransmitException() {
-        qDebug() << "\n--- Test: Transmit Exception Simulation ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -450,7 +378,6 @@ private slots:
         QByteArray response = channel.transmit(QByteArray::fromHex("00A4"));
         QCOMPARE(response, QByteArray::fromHex("9000"));
         
-        qDebug() << "✓ Exception simulation works";
     }
 
     // ========================================================================
@@ -458,8 +385,6 @@ private slots:
     // ========================================================================
 
     void testChannelDeletion() {
-        qDebug() << "\n--- Test: Channel Deletion ---";
-        
         auto* mock = new MockBackend();
         QVERIFY(mock->parent() == nullptr);
         
@@ -477,7 +402,6 @@ private slots:
         // Mock should be deleted by channel
         // (Can't verify directly, but no crash = success)
         
-        qDebug() << "✓ Channel deletion cleans up backend";
     }
 
     // ========================================================================
@@ -485,15 +409,10 @@ private slots:
     // ========================================================================
 
     void testMultipleConnectDisconnectCycles() {
-        qDebug() << "\n--- Test: Multiple Connect/Disconnect Cycles ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
         for (int i = 0; i < 5; i++) {
-            qDebug() << "  Cycle" << i + 1;
-            
-            // Connect
             mock->simulateCardInserted();
             QVERIFY(channel.isConnected());
             
@@ -509,12 +428,9 @@ private slots:
         // Should have tracked all transmissions
         QCOMPARE(mock->getTransmitCount(), 5);
         
-        qDebug() << "✓ Multiple cycles work";
     }
 
     void testSignalOrder() {
-        qDebug() << "\n--- Test: Signal Order ---";
-        
         auto* mock = new MockBackend();
         KeycardChannel channel(mock);
         
@@ -531,7 +447,6 @@ private slots:
         QCOMPARE(spyDetected.count(), 2);
         QCOMPARE(spyLost.count(), 2);
         
-        qDebug() << "✓ Signals emitted in correct order";
     }
 };
 

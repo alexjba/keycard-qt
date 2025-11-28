@@ -12,7 +12,6 @@ class TestTypes : public QObject {
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing type parsers";
     }
     
     void testPairingInfo() {
@@ -94,7 +93,6 @@ private slots:
     }
     
     void cleanupTestCase() {
-        qDebug() << "Type parser tests complete";
     }
 };
 

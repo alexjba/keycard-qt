@@ -11,7 +11,6 @@ class TestAPDUUtils : public QObject {
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing APDU Utils";
     }
     
     void testPadding() {
@@ -107,7 +106,6 @@ private slots:
     }
     
     void cleanupTestCase() {
-        qDebug() << "APDU Utils tests complete";
     }
 };
 

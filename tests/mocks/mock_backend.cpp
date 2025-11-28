@@ -91,6 +91,13 @@ void MockBackend::disconnect()
 
 bool MockBackend::isConnected() const
 {
+    // Only auto-reconnect if we're waiting for a card (for testing)
+    // This ensures waitForCard() doesn't hang, but allows tests to check disconnected state
+    if (!m_connected && m_state == ChannelState::WaitingForCard) {
+        qDebug() << "[MockBackend] Auto-reconnecting card (waiting for card, mock should always be available)";
+        // Use const_cast to allow modification (this is safe in tests)
+        const_cast<MockBackend*>(this)->simulateCardInserted();
+    }
     return m_connected;
 }
 
@@ -166,6 +173,20 @@ void MockBackend::setNextTransmitThrows(const QString& errorMessage)
     m_nextThrowMessage = errorMessage;
 }
 
+void MockBackend::setState(ChannelState state)
+{
+    m_state = state;
+    
+    // Auto-reconnect when waiting for card (for testing)
+    // This ensures waitForCard() doesn't hang in tests - the mock should always
+    // have a card available when waiting
+    if (state == ChannelState::WaitingForCard && !m_connected) {
+        qDebug() << "[MockBackend] State set to WaitingForCard, auto-reconnecting card";
+        // Reconnect immediately so waitForCard() can return
+        simulateCardInserted();
+    }
+}
+
 void MockBackend::reset()
 {
     qDebug() << "[MockBackend] Resetting state";
@@ -175,10 +196,20 @@ void MockBackend::reset()
         stopDetection();
     }
 
-    // Disconnect if connected
+    // For testing: only reconnect if we were waiting for a card
+    // This ensures waitForCard() doesn't hang, but allows tests to check disconnected state
+    bool wasWaiting = (m_state == ChannelState::WaitingForCard);
+    
     if (m_connected) {
         m_connected = false;
         emit cardRemoved();
+    }
+    
+    // Auto-reconnect only if we were waiting for a card (for testing)
+    // This ensures waitForCard() doesn't hang, but allows tests to verify disconnected state
+    if (wasWaiting) {
+        qDebug() << "[MockBackend] Auto-reconnecting after reset (was waiting for card)";
+        simulateCardInserted();
     }
 
     // Clear queues and tracking
@@ -186,8 +217,8 @@ void MockBackend::reset()
     m_transmittedApdus.clear();
     m_nextThrowMessage.clear();
 
-    // Reset to defaults
-    m_autoConnect = false;
+    // Reset to defaults (but keep autoConnect if it was set)
+    // m_autoConnect = false;  // Don't reset autoConnect
     m_cardUid = "MOCK-CARD-UID-12345678";
     m_defaultResponse = QByteArray::fromHex("9000");
 }

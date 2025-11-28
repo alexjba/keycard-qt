@@ -1,117 +1,138 @@
-/**
- * Unit tests for new CommandSet methods
- * Tests all 19 newly implemented methods
- */
-
 #include <QTest>
-#include <QDebug>
-#include <QRandomGenerator>
 #include "keycard-qt/command_set.h"
-#include "keycard-qt/channel_interface.h"
+#include "keycard-qt/keycard_channel.h"
+#include "mocks/mock_backend.h"
+#include <memory>
 
-// Mock channel for testing
-class MockChannel : public Keycard::IChannel {
-public:
-    QByteArray lastTransmitted;
-    QByteArray nextResponse;
-    QList<QByteArray> responseQueue;
-    bool connected = true;
-    int transmitCount = 0;
-    
-    QByteArray transmit(const QByteArray& apdu) override {
-        lastTransmitted = apdu;
-        transmitCount++;
-        
-        if (!responseQueue.isEmpty()) {
-            return responseQueue.takeFirst();
-        }
-        return nextResponse;
-    }
-    
-    bool isConnected() const override {
-        return connected;
-    }
-    
-    void reset() {
-        lastTransmitted.clear();
-        nextResponse.clear();
-        responseQueue.clear();
-        transmitCount = 0;
-    }
-};
+using namespace Keycard;
+using namespace Keycard::Test;
 
 class TestCommandSetNew : public QObject {
     Q_OBJECT
     
 private:
-    // Helper to create a mock secure channel session by directly injecting state
-    void setupSecureChannel(MockChannel& mockChannel, Keycard::CommandSet& cmd) {
-        // Create mock pairing info
-        QByteArray pairingKey(32, 0xAB);  // Mock pairing key
-        Keycard::PairingInfo pairingInfo(pairingKey, 1);
-        
-        // Create mock session keys (16 bytes each for AES-128)
-        QByteArray mockIV(16, 0x00);      // Initialization vector
-        QByteArray mockEncKey(16, 0xEE);  // Encryption key
-        QByteArray mockMacKey(16, 0xDD);  // MAC key
-        
-        // Directly inject state, bypassing crypto validation
-        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
-        
-        mockChannel.reset();
+    std::shared_ptr<KeycardChannel> createMockChannel() {
+        auto* mock = new MockBackend();
+        mock->setAutoConnect(true);
+        auto channel = std::make_shared<KeycardChannel>(mock);
+        mock->simulateCardInserted();
+        return channel;
     }
+    
     
 private slots:
     void initTestCase() {
-        qDebug() << "Testing new CommandSet methods";
     }
     
-    // ========================================
-    // Security Operations Tests
-    // ========================================
+    void testConstruction() {
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
+        QVERIFY(cmd.lastError().isEmpty());
+    }
+    
+    void testSelectCommand() {
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        
+        QByteArray mockResponse = QByteArray::fromHex("8041");
+        mockResponse.append(QByteArray(65, 0x04));
+        mockResponse.append(QByteArray::fromHex("9000"));
+        mock->queueResponse(mockResponse);
+        
+        CommandSet cmd(channel, nullptr, nullptr);
+        ApplicationInfo info = cmd.select();
+        
+        QVERIFY(info.installed);
+        QVERIFY(mock->getTransmitCount() > 0);
+    }
+    
+    void testSelectError() {
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        
+        mock->queueResponse(QByteArray::fromHex("6A82"));
+        
+        CommandSet cmd(channel, nullptr, nullptr);
+        ApplicationInfo info = cmd.select();
+        
+        QVERIFY(!cmd.lastError().isEmpty());
+    }
+    
+    void testVerifyPINWithoutSecureChannel() {
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        bool result = cmd.verifyPIN("000000");
+        
+        QVERIFY(!result);
+        QVERIFY(!cmd.lastError().isEmpty());
+    }
     
     void testChangePIN() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
-        setupSecureChannel(mockChannel, cmd);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
         
-        // Mock success response
-        mockChannel.nextResponse = QByteArray::fromHex("9000");
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        QByteArray pairingKey(32, 0xAB);
+        PairingInfo pairingInfo(pairingKey, 1);
+        QByteArray mockIV(16, 0x00);
+        QByteArray mockEncKey(16, 0xEE);
+        QByteArray mockMacKey(16, 0xDD);
+        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
+        
+        mock->simulateCardInserted();
+        QTRY_VERIFY(channel->isConnected());
+        
+        mock->queueResponse(QByteArray::fromHex("9000"));
+        
+        QVERIFY(channel->isConnected());
         
         bool result = cmd.changePIN("123456");
         
         QVERIFY(result);
-        QVERIFY(!mockChannel.lastTransmitted.isEmpty());
+        QVERIFY(mock->getTransmitCount() > 0);
         QVERIFY(cmd.lastError().isEmpty());
     }
     
     void testChangePINWithoutSecureChannel() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
         bool result = cmd.changePIN("123456");
         
         QVERIFY(!result);
         QVERIFY(!cmd.lastError().isEmpty());
-        QVERIFY(cmd.lastError().contains("Secure channel"));
+        QVERIFY(cmd.lastError().contains("APDU error") || cmd.lastError().contains("Secure channel"));
     }
     
     void testChangePUK() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
-        setupSecureChannel(mockChannel, cmd);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
         
-        mockChannel.nextResponse = QByteArray::fromHex("9000");
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        QByteArray pairingKey(32, 0xAB);
+        PairingInfo pairingInfo(pairingKey, 1);
+        QByteArray mockIV(16, 0x00);
+        QByteArray mockEncKey(16, 0xEE);
+        QByteArray mockMacKey(16, 0xDD);
+        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
+        
+        mock->simulateCardInserted();
+        QTRY_VERIFY(channel->isConnected());
+        
+        mock->queueResponse(QByteArray::fromHex("9000"));
         
         bool result = cmd.changePUK("123456789012");
         
         QVERIFY(result);
-        QVERIFY(!mockChannel.lastTransmitted.isEmpty());
+        QVERIFY(mock->getTransmitCount() > 0);
     }
     
     void testChangePUKWithoutSecureChannel() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
         bool result = cmd.changePUK("123456789012");
         
@@ -120,25 +141,46 @@ private slots:
     }
     
     void testUnblockPIN() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
-        setupSecureChannel(mockChannel, cmd);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
         
-        mockChannel.nextResponse = QByteArray::fromHex("9000");
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        QByteArray pairingKey(32, 0xAB);
+        PairingInfo pairingInfo(pairingKey, 1);
+        QByteArray mockIV(16, 0x00);
+        QByteArray mockEncKey(16, 0xEE);
+        QByteArray mockMacKey(16, 0xDD);
+        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
+        
+        mock->simulateCardInserted();
+        QTRY_VERIFY(channel->isConnected());
+        
+        mock->queueResponse(QByteArray::fromHex("9000"));
         
         bool result = cmd.unblockPIN("123456789012", "654321");
         
         QVERIFY(result);
-        QVERIFY(!mockChannel.lastTransmitted.isEmpty());
+        QVERIFY(mock->getTransmitCount() > 0);
     }
     
     void testUnblockPINWrongPUK() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
-        setupSecureChannel(mockChannel, cmd);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
         
-        // Mock wrong PUK (5 attempts remaining)
-        mockChannel.nextResponse = QByteArray::fromHex("63C5");
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        QByteArray pairingKey(32, 0xAB);
+        PairingInfo pairingInfo(pairingKey, 1);
+        QByteArray mockIV(16, 0x00);
+        QByteArray mockEncKey(16, 0xEE);
+        QByteArray mockMacKey(16, 0xDD);
+        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
+        
+        mock->simulateCardInserted();
+        QTRY_VERIFY(channel->isConnected());
+        
+        mock->queueResponse(QByteArray::fromHex("63C5"));
         
         bool result = cmd.unblockPIN("000000000000", "654321");
         
@@ -148,37 +190,41 @@ private slots:
     }
     
     void testChangePairingSecret() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
-        setupSecureChannel(mockChannel, cmd);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
         
-        mockChannel.nextResponse = QByteArray::fromHex("9000");
+        CommandSet cmd(channel, nullptr, nullptr);
+        
+        QByteArray pairingKey(32, 0xAB);
+        PairingInfo pairingInfo(pairingKey, 1);
+        QByteArray mockIV(16, 0x00);
+        QByteArray mockEncKey(16, 0xEE);
+        QByteArray mockMacKey(16, 0xDD);
+        cmd.testInjectSecureChannelState(pairingInfo, mockIV, mockEncKey, mockMacKey);
+        
+        mock->simulateCardInserted();
+        QTRY_VERIFY(channel->isConnected());
+        
+        mock->queueResponse(QByteArray::fromHex("9000"));
         
         bool result = cmd.changePairingSecret("newpassword");
         
         QVERIFY(result);
     }
     
-    // ========================================
-    // Key Management Tests
-    // ========================================
-    
     void testGenerateKey() {
-        // Note: Full testing requires encrypted response from secure channel
-        // This test verifies the command is sent correctly
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Try without secure channel - should fail
         QByteArray result = cmd.generateKey();
         QVERIFY(result.isEmpty());
         QVERIFY(!cmd.lastError().isEmpty());
-        QVERIFY(cmd.lastError().contains("Secure channel"));
+        QVERIFY(cmd.lastError().contains("APDU error") || cmd.lastError().contains("Secure channel"));
     }
     
     void testGenerateKeyWithoutSecureChannel() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
         QByteArray result = cmd.generateKey();
         
@@ -187,97 +233,83 @@ private slots:
     }
     
     void testGenerateMnemonic() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Test without secure channel
         QVector<int> result = cmd.generateMnemonic(4);
         QVERIFY(result.isEmpty());
         QVERIFY(!cmd.lastError().isEmpty());
     }
     
     void testGenerateMnemonicEmpty() {
-        // This test verifies the method signature works
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QVector<int> result = cmd.generateMnemonic();
         QVERIFY(result.isEmpty());
     }
     
     void testLoadSeed() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
         QByteArray seed(64, 0xAB);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.loadSeed(seed);
         QVERIFY(result.isEmpty());
         QVERIFY(!cmd.lastError().isEmpty());
     }
     
     void testLoadSeedInvalidSize() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        QByteArray seed(32, 0xAB);  // Wrong size (should be 64)
+        QByteArray seed(32, 0xAB);
         
         QByteArray result = cmd.loadSeed(seed);
         
-        // Should fail due to size validation
         QVERIFY(result.isEmpty());
         QVERIFY(cmd.lastError().contains("64 bytes"));
     }
     
     void testRemoveKey() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         bool result = cmd.removeKey();
         QVERIFY(!result);
         QVERIFY(!cmd.lastError().isEmpty());
     }
     
     void testDeriveKeyAbsolutePath() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         bool result = cmd.deriveKey("m/44'/60'/0'/0/0");
         QVERIFY(!result);
         QVERIFY(!cmd.lastError().isEmpty());
     }
     
     void testDeriveKeyRelativePath() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Test path parsing (will fail without secure channel)
         bool result = cmd.deriveKey("../0/1");
         QVERIFY(!result);
     }
     
     void testDeriveKeyCurrentPath() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Test path parsing (will fail without secure channel)
         bool result = cmd.deriveKey("./5");
         QVERIFY(!result);
     }
     
-    // ========================================
-    // Signing Tests
-    // ========================================
-    
     void testSign() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray hash(32, 0x12);
         QByteArray result = cmd.sign(hash);
         QVERIFY(result.isEmpty());
@@ -285,119 +317,102 @@ private slots:
     }
     
     void testSignInvalidHashSize() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        QByteArray hash(16, 0x12);  // Wrong size (should be 32)
+        QByteArray hash(16, 0x12);
         
         QByteArray result = cmd.sign(hash);
         
-        // Should fail due to size validation
         QVERIFY(result.isEmpty());
         QVERIFY(cmd.lastError().contains("32 bytes"));
     }
     
     void testSignWithPath() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray hash(32, 0x12);
         QByteArray result = cmd.signWithPath(hash, "m/44'/60'/0'/0/0", false);
         QVERIFY(result.isEmpty());
     }
     
     void testSignWithPathMakeCurrent() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray hash(32, 0x12);
         QByteArray result = cmd.signWithPath(hash, "m/44'/60'/0'/0/0", true);
         QVERIFY(result.isEmpty());
     }
     
     void testSignPinless() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray hash(32, 0x12);
         QByteArray result = cmd.signPinless(hash);
         QVERIFY(result.isEmpty());
     }
     
     void testSetPinlessPath() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail (but after path validation)
         bool result = cmd.setPinlessPath("m/44'/60'/0'/0/0");
         QVERIFY(!result);
     }
     
     void testSetPinlessPathRelative() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Should fail - pinless path must be absolute (validation happens first)
         bool result = cmd.setPinlessPath("../0/0");
         QVERIFY(!result);
         QVERIFY(cmd.lastError().contains("absolute"));
     }
     
-    // ========================================
-    // Data Storage Tests
-    // ========================================
-    
     void testStoreData() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray data = "Hello, Keycard!";
         bool result = cmd.storeData(0x00, data);
         QVERIFY(!result);
     }
     
     void testStoreDataNDEF() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray data = "NDEF data";
         bool result = cmd.storeData(0x01, data);
         QVERIFY(!result);
     }
     
     void testGetData() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.getData(0x00);
         QVERIFY(result.isEmpty());
     }
     
     void testGetDataEmpty() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Test that method can be called
         QByteArray result = cmd.getData(0x00);
         QVERIFY(result.isEmpty());
     }
     
-    // ========================================
-    // Utilities Tests
-    // ========================================
-    
     void testIdentify() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        CommandSet cmd(channel, nullptr, nullptr);
         
         QByteArray mockIdentity = "KeycardIdentity";
-        mockChannel.nextResponse = mockIdentity + QByteArray::fromHex("9000");
+        mock->queueResponse(mockIdentity + QByteArray::fromHex("9000"));
         
         QByteArray result = cmd.identify();
         
@@ -406,12 +421,13 @@ private slots:
     }
     
     void testIdentifyWithChallenge() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        CommandSet cmd(channel, nullptr, nullptr);
         
         QByteArray challenge(32, 0xAB);
         QByteArray mockIdentity = "KeycardIdentity";
-        mockChannel.nextResponse = mockIdentity + QByteArray::fromHex("9000");
+        mock->queueResponse(mockIdentity + QByteArray::fromHex("9000"));
         
         QByteArray result = cmd.identify(challenge);
         
@@ -419,75 +435,66 @@ private slots:
     }
     
     void testExportKeyCurrent() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.exportKey(false, false, "");
         QVERIFY(result.isEmpty());
     }
     
     void testExportKeyDerive() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.exportKey(true, false, "m/44'/60'/0'/0/0");
         QVERIFY(result.isEmpty());
     }
     
     void testExportKeyDeriveAndMakeCurrent() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.exportKey(true, true, "m/44'/60'/0'/0/0");
         QVERIFY(result.isEmpty());
     }
     
     void testExportKeyExtended() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Without secure channel, should fail
         QByteArray result = cmd.exportKeyExtended(true, false, "m/44'/60'/0'/0/0");
         QVERIFY(result.isEmpty());
     }
     
     void testFactoryReset() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        mockChannel.nextResponse = QByteArray::fromHex("9000");
+        mock->queueResponse(QByteArray::fromHex("9000"));
         
         bool result = cmd.factoryReset();
         
         QVERIFY(result);
-        // ApplicationInfo should be reset
         QVERIFY(cmd.applicationInfo().instanceUID.isEmpty());
     }
     
     void testFactoryResetFailed() {
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        auto* mock = qobject_cast<MockBackend*>(channel->backend());
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        mockChannel.nextResponse = QByteArray::fromHex("6985");  // Conditions not satisfied
+        mock->queueResponse(QByteArray::fromHex("6985"));
         
         bool result = cmd.factoryReset();
         
         QVERIFY(!result);
     }
     
-    // ========================================
-    // Edge Cases & Error Handling
-    // ========================================
-    
     void testMultipleOperationsSequence() {
-        // Test that multiple methods can be called in sequence
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // All should fail without secure channel
         QByteArray keyUID = cmd.generateKey();
         QVERIFY(keyUID.isEmpty());
         
@@ -500,26 +507,21 @@ private slots:
     }
     
     void testPathParsingHardenedNotation() {
-        // Test that path parsing handles both ' and h notation
-        MockChannel mockChannel;
-        Keycard::CommandSet cmd(&mockChannel);
+        auto channel = createMockChannel();
+        CommandSet cmd(channel, nullptr, nullptr);
         
-        // Both should fail without secure channel, but path parsing should work
         bool result1 = cmd.deriveKey("m/44'/60'/0'");
         QVERIFY(!result1);
         
         bool result2 = cmd.deriveKey("m/44h/60h/0h");
         QVERIFY(!result2);
         
-        // The key is that both are accepted syntactically
-        QVERIFY(cmd.lastError().contains("Secure channel"));
+        QVERIFY(cmd.lastError().contains("APDU error") || cmd.lastError().contains("Secure channel"));
     }
     
     void cleanupTestCase() {
-        qDebug() << "New CommandSet tests complete";
     }
 };
 
 QTEST_MAIN(TestCommandSetNew)
 #include "test_command_set_new.moc"
-

@@ -49,7 +49,7 @@ public:
     QString backendName() const override { return "Mock Backend"; }
     void setPollingInterval(int intervalMs) override { m_pollingInterval = intervalMs; }
     bool requestCardAtStartup() override { return true; } // No-op for mock
-    void setState(ChannelState state) override { m_state = state; }
+    void setState(ChannelState state) override;
     ChannelState state() const override { return m_state; }
 
     // ========================================================================

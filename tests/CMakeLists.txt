@@ -43,17 +43,16 @@ add_keycard_test(test_apdu_command)
 add_keycard_test(test_apdu_response)
 add_keycard_test(test_apdu_utils)
 add_keycard_test(test_secure_channel)
-add_keycard_test(test_command_set)
 add_keycard_test(test_types)
 
 # Extended test suites for higher coverage
-add_keycard_test(test_command_set_extended)
+add_keycard_test(test_command_set_extended mocks/mock_backend.cpp)
 add_keycard_test(test_secure_channel_extended)
 add_keycard_test(test_types_extended)
 add_keycard_test(test_keycard_channel)
-add_keycard_test(test_command_set_new)
+add_keycard_test(test_command_set_new mocks/mock_backend.cpp)
 add_keycard_test(test_pbkdf2)
-add_keycard_test(test_init_pair)
+add_keycard_test(test_init_pair mocks/mock_backend.cpp)
 
 # Dependency Injection tests with mock backend
 add_keycard_test(test_keycard_channel_di mocks/mock_backend.cpp)

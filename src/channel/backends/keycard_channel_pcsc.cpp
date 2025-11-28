@@ -48,7 +48,7 @@ KeycardChannelPcsc::KeycardChannelPcsc(QObject* parent)
     , m_firstReaderCheck(true)
 {
     qDebug() << "KeycardChannelPcsc: Initialized with event-driven detection (Desktop smart card reader)";
-    startDetection()
+    startDetection();
 }
 
 KeycardChannelPcsc::~KeycardChannelPcsc()
