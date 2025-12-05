@@ -27,23 +27,8 @@ function(add_keycard_example example_name)
     endif()
 endfunction()
 
-# Simple detection example
+# Simple detection example - demonstrates basic card detection
 add_keycard_example(simple_detection)
 
-# Full test application
-add_keycard_example(full_test)
-
-# Advanced test application
-add_keycard_example(advanced_test)
-
-# Pair test application
-add_keycard_example(pair_test)
-
-# Factory reset test application
-add_keycard_example(factory_reset_test)
-
-# Full integration test application
-add_keycard_example(full_integration_test)
-
-message(STATUS "Examples configured - build with: make simple_detection full_test advanced_test pair_test factory_reset_test full_integration_test")
+message(STATUS "Example configured: simple_detection")
 
