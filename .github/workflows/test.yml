@@ -15,21 +15,174 @@ on:
   workflow_dispatch:
     inputs:
       qt_version:
-        description: 'Qt version (dependent on docker image)'
+        description: 'Qt version'
         required: false
-        default: '6.9.2'
+        default: '6.7.2'
         type: string
 
 jobs:
-  # Fast tests with desktop Qt (lightweight, runs always)
-  test:
+  # Multi-platform build and test
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-22.04
+            name: Linux
+            qt_arch: gcc_64
+            cmake_generator: "Unix Makefiles"
+            
+          # macOS builds  
+          - os: macos-13
+            name: macOS (Intel)
+            qt_arch: clang_64
+            cmake_generator: "Unix Makefiles"
+            
+          - os: macos-14
+            name: macOS (ARM64)
+            qt_arch: clang_64
+            cmake_generator: "Unix Makefiles"
+            
+          # Windows builds
+          - os: windows-2022
+            name: Windows (MSVC)
+            qt_arch: win64_msvc2019_64
+            cmake_generator: "Visual Studio 17 2022"
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    
+    env:
+      QT_VERSION: ${{ inputs.qt_version || '6.7.2' }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Clean workspace if retrying job
+        if: ${{ github.run_attempt > 1 }}
+        shell: bash
+        run: |
+          git reset --hard
+          git clean -xfd
+
+      # Install Qt
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+          modules: 'qtbase'
+
+      # Linux-specific dependencies
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libpcsclite-dev pkg-config libssl-dev
+          
+          echo "=== Verifying installations ==="
+          pkg-config --modversion libpcsclite
+          openssl version
+
+      # macOS-specific setup
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          # PC/SC framework is already available on macOS
+          # Just verify OpenSSL is available
+          echo "=== Verifying installations ==="
+          if [ -f "/System/Library/Frameworks/PCSC.framework/PCSC" ]; then
+            echo "✓ PCSC framework found"
+          else
+            echo "⚠ PCSC framework not found at expected location"
+          fi
+          openssl version
+
+      # Windows-specific setup
+      - name: Setup Windows dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # winscard.lib is part of Windows SDK, should be available
+          echo "=== Windows Environment ==="
+          echo "OpenSSL version:"
+          openssl version || echo "OpenSSL not in PATH"
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          mkdir -p build
+          cd build
+          
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake .. \
+              -G "${{ matrix.cmake_generator }}" \
+              -A x64 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=ON
+          else
+            cmake .. \
+              -G "${{ matrix.cmake_generator }}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=ON
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          cd build
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake --build . --config Release -j
+          else
+            cmake --build . -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          fi
+
+      - name: Run tests
+        shell: bash
+        run: |
+          cd build
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ctest --output-on-failure --verbose -C Release
+          else
+            ctest --output-on-failure --verbose
+          fi
+
+      - name: Test Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build/Testing/Temporary/LastTest.log ]; then
+            echo "=== Test Results ==="
+            cat build/Testing/Temporary/LastTest.log
+          fi
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keycard-qt-${{ matrix.name }}
+          path: |
+            build/libkeycard-qt.*
+            build/keycard-qt.dll
+            build/Release/keycard-qt.*
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Linux Docker-based test (original test job)
+  docker-test:
     runs-on: ubuntu-latest
-    name: Run Tests
+    name: Linux (Docker Qt 6.9.2)
     container:
       image: harbor.status.im/status-im/status-desktop-build:1.0.5-qt6.9.2-android
       # Run as root to allow installing packages
     env:
-      QT_VERSION: ${{ inputs.qt_version || '6.9.2' }}
+      QT_VERSION: '6.9.2'
       QT_HOST: gcc_64
       DEBIAN_FRONTEND: noninteractive
 
@@ -123,7 +276,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="${{ env.QT_PATH }}" \
             -DQt6_DIR="${{ env.Qt6_DIR }}" \
-            -DBUILD_TESTS=ON
+            -DBUILD_TESTING=ON
 
       - name: Build
         run: |
