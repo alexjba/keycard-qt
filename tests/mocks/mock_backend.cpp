@@ -187,6 +187,20 @@ void MockBackend::setState(ChannelState state)
     }
 }
 
+void MockBackend::forceScan()
+{
+    qDebug() << "[MockBackend] Force scan requested";
+    // If detection is active and we have auto-connect enabled, trigger card detection
+    if (m_detecting && m_autoConnect && !m_connected) {
+        m_autoConnectTimer->stop();
+        simulateCardInserted();
+    } else if (m_detecting && !m_connected) {
+        // Even without auto-connect, if we're detecting, simulate a card insertion
+        // This helps tests that need to trigger a scan
+        simulateCardInserted();
+    }
+}
+
 void MockBackend::reset()
 {
     qDebug() << "[MockBackend] Resetting state";

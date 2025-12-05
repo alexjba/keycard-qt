@@ -6,36 +6,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-
 # Qt modules
 # Core is always required
-# Nfc is required for iOS and Android (Desktop uses PC/SC)
+# Nfc is required for iOS, Android, and unified backend (Desktop uses PC/SC by default)
 find_package(Qt6 REQUIRED COMPONENTS Core)
 
 if(IOS OR ANDROID)
+    message(STATUS "Backend: Unified Qt NFC (Android/iOS)")
     find_package(Qt6 REQUIRED COMPONENTS Nfc)
-    if(IOS)
-        message(STATUS "iOS build: Using Qt NFC")
-    else()
-        message(STATUS "Android build: Using Qt NFC (with JNI fix for onNewIntent)")
-    endif()
-else()
-    message(STATUS "Desktop build: Using PC/SC (no Qt NFC needed)")
 endif()
-
 
 # OpenSSL for secp256k1 ECDH
 # For Android and iOS, we use manually provided paths instead of find_package
 if((ANDROID OR IOS) AND OPENSSL_CRYPTO_LIBRARY AND OPENSSL_BUILD_INCLUDE_DIR AND OPENSSL_SOURCE_INCLUDE_DIR)
     set(OpenSSL_FOUND TRUE)
-    if(ANDROID)
-        message(STATUS "Using manually provided OpenSSL for Android")
-    else()
-        message(STATUS "Using manually provided OpenSSL for iOS")
-    endif()
-    message(STATUS "  Crypto library: ${OPENSSL_CRYPTO_LIBRARY}")
-    message(STATUS "  Build include dir: ${OPENSSL_BUILD_INCLUDE_DIR}")
-    message(STATUS "  Source include dir: ${OPENSSL_SOURCE_INCLUDE_DIR}")
 else()
     find_package(OpenSSL)
     if(OpenSSL_FOUND)
@@ -69,112 +53,6 @@ set(KEYCARD_QT_SOURCES
     src/command_set.cpp
 )
 
-# ============================================================================
-# Backend Selection (Plugin Architecture)
-# ============================================================================
-# Select appropriate backend based on platform:
-#   - Desktop (macOS/Linux/Windows): PC/SC backend
-#   - Mobile (iOS/Android): Choose backend
-# ============================================================================
-if(IOS)
-    message(STATUS "Backend: Qt NFC (iOS)")
-    list(APPEND KEYCARD_QT_SOURCES
-        src/channel/backends/keycard_channel_qt_nfc.cpp
-    )
-elseif(ANDROID)
-    # Option to use Android NFC backend instead of Qt NFC
-    option(USE_ANDROID_NFC_BACKEND "Use direct Android NFC backend instead of Qt NFC" ON)
-    if(USE_ANDROID_NFC_BACKEND)
-        message(STATUS "Backend: Android NFC (direct JNI)")
-        add_definitions(-DUSE_ANDROID_NFC_BACKEND)
-        list(APPEND KEYCARD_QT_SOURCES
-            src/channel/backends/keycard_channel_android_nfc.cpp
-        )
-        
-        # ============================================================================
-        # Android NFC Java Classes - Build JAR
-        # ============================================================================
-        # Build the Android NFC helper classes into a JAR file
-        # This makes the library self-contained - consumers don't need to copy Java files
-        # Only needed when using Android NFC backend (requires Java helper classes)
-        # ============================================================================
-        
-        include(cmake/AndroidNfcJar.cmake)
-        
-    else()
-        message(STATUS "Backend: Qt NFC (Android)")
-        list(APPEND KEYCARD_QT_SOURCES
-            src/channel/backends/keycard_channel_qt_nfc.cpp
-        )
-    endif()
-    
-    # Add ENABLE_QT_NFC_ANDROID_WORKAROUNDS as a compiler definition
-    if(ENABLE_QT_NFC_ANDROID_WORKAROUNDS)
-        add_definitions(-DENABLE_QT_NFC_ANDROID_WORKAROUNDS=1)
-        message(STATUS "Compiler flag: -DENABLE_QT_NFC_ANDROID_WORKAROUNDS=1")
-    else()
-        add_definitions(-DENABLE_QT_NFC_ANDROID_WORKAROUNDS=0)
-        message(STATUS "Compiler flag: -DENABLE_QT_NFC_ANDROID_WORKAROUNDS=0")
-    endif()
-else()
-    message(STATUS "Backend: PC/SC (Desktop)")
-    list(APPEND KEYCARD_QT_SOURCES
-        src/channel/backends/keycard_channel_pcsc.cpp
-    )
-endif()
-
-# ============================================================================
-# Qt NFC Android Workarounds Configuration
-# ============================================================================
-# Enable workarounds for Qt 6.9.x NFC bugs on Android
-# Set to OFF when testing newer Qt versions or when Qt fixes the bugs
-#
-# Bugs being worked around:
-#   1. QtNative.onNewIntent() JNI method never registered
-#   2. QNearFieldManager::startTargetDetection() doesn't call startDiscovery()
-#   3. targetDetected signal doesn't fire
-#
-# See: QT_NFC_WORKAROUNDS_REMOVAL_GUIDE.md for removal instructions
-# ============================================================================
-# Set default for Qt NFC workarounds based on Android NFC backend usage
-if(USE_ANDROID_NFC_BACKEND)
-    option(ENABLE_QT_NFC_ANDROID_WORKAROUNDS
-           "Enable workarounds for Qt 6.9.x NFC bugs on Android" OFF)
-else()
-    option(ENABLE_QT_NFC_ANDROID_WORKAROUNDS
-           "Enable workarounds for Qt 6.9.x NFC bugs on Android" ON)
-endif()
-
-# Add Android-specific sources
-if(ANDROID)
-    # Always include android_jni_register.cpp for Android NFC handling
-    # Either for Qt NFC workarounds or Android NFC backend
-    if(ENABLE_QT_NFC_ANDROID_WORKAROUNDS OR USE_ANDROID_NFC_BACKEND)
-        if(ENABLE_QT_NFC_ANDROID_WORKAROUNDS AND USE_ANDROID_NFC_BACKEND)
-            message(STATUS "Android NFC: Both Qt NFC workarounds and Android NFC backend enabled")
-        elseif(ENABLE_QT_NFC_ANDROID_WORKAROUNDS)
-            message(STATUS "Qt NFC Android workarounds: ENABLED (for Qt 6.9.x bugs)")
-            message(STATUS "  - QtNative.onNewIntent() JNI registration")
-            message(STATUS "  - Manual QtNfc.startDiscovery() call")
-            message(STATUS "  - Direct tag processing and signal emission")
-        elseif(USE_ANDROID_NFC_BACKEND)
-            message(STATUS "Android NFC backend: ENABLED (direct JNI implementation)")
-            message(STATUS "  - NFC intent processing for direct Android NFC")
-        endif()
-
-        list(APPEND KEYCARD_QT_SOURCES
-            src/channel/android_jni_register.cpp
-        )
-        list(APPEND KEYCARD_QT_HEADERS
-            include/keycard-qt/qt_nfc_android_workarounds.h
-        )
-    else()
-        message(STATUS "Android NFC: No special handling enabled")
-        message(STATUS "  Re-enable Qt workarounds with: -DENABLE_QT_NFC_ANDROID_WORKAROUNDS=ON")
-        message(STATUS "  Or use Android NFC backend with: -DUSE_ANDROID_NFC_BACKEND=ON")
-    endif()
-endif()
-
 # Public headers
 set(KEYCARD_QT_HEADERS
     include/keycard-qt/channel_interface.h
@@ -189,22 +67,18 @@ set(KEYCARD_QT_HEADERS
     include/keycard-qt/backends/keycard_channel_backend.h
 )
 
-# Add platform-specific backend headers
-if(IOS)
-    list(APPEND KEYCARD_QT_HEADERS
-        include/keycard-qt/backends/keycard_channel_qt_nfc.h
+
+if(IOS OR ANDROID)
+    list(APPEND KEYCARD_QT_SOURCES
+        src/channel/backends/keycard_channel_unified_qt_nfc.cpp
     )
-elseif(ANDROID)
-    if(USE_ANDROID_NFC_BACKEND)
-        list(APPEND KEYCARD_QT_HEADERS
-            include/keycard-qt/backends/keycard_channel_android_nfc.h
-        )
-    else()
-        list(APPEND KEYCARD_QT_HEADERS
-            include/keycard-qt/backends/keycard_channel_qt_nfc.h
-        )
-    endif()
+    list(APPEND KEYCARD_QT_HEADERS
+        include/keycard-qt/backends/keycard_channel_unified_qt_nfc.h
+    )
 else()
+    list(APPEND KEYCARD_QT_SOURCES
+        src/channel/backends/keycard_channel_pcsc.cpp
+    )
     list(APPEND KEYCARD_QT_HEADERS
         include/keycard-qt/backends/keycard_channel_pcsc.h
     )
@@ -236,23 +110,9 @@ target_link_libraries(keycard-qt
         Qt6::Core
 )
 
-# Qt NFC for iOS and Android
+# Qt NFC for iOS, Android, and unified backend (desktop)
 if(IOS OR ANDROID)
     target_link_libraries(keycard-qt PUBLIC Qt6::Nfc)
-    if(IOS)
-        message(STATUS "Linking Qt NFC for iOS")
-    else()
-        message(STATUS "Linking Qt NFC for Android")
-    endif()
-endif()
-
-# Android JNI support
-if(ANDROID)
-    find_package(Qt6 COMPONENTS CorePrivate)
-    if(Qt6CorePrivate_FOUND)
-        target_link_libraries(keycard-qt PRIVATE Qt6::CorePrivate)
-    endif()
-    message(STATUS "Android build: JNI support enabled")
 endif()
 
 # Link OpenSSL (if found)
@@ -301,6 +161,7 @@ if(OpenSSL_FOUND)
 endif()
 
 # Link PC/SC framework on Apple platforms (desktop only, not iOS)
+# Required for both direct PC/SC backend and Qt NFC's PC/SC backend
 if(APPLE AND NOT IOS)
     find_library(PCSC_LIBRARY PCSC)
     if(PCSC_LIBRARY)

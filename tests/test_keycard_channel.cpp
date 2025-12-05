@@ -37,16 +37,6 @@ private slots:
         QVERIFY(uid.isEmpty());
     }
     
-    // Test setPollingInterval
-    void testSetPollingInterval() {
-        // Should not crash - valid intervals
-        channel->setPollingInterval(100);
-        channel->setPollingInterval(50);
-        channel->setPollingInterval(500);
-        
-        QVERIFY(true);  // No crash = success
-    }
-    
     // Test stopDetection when not started
     void testStopDetectionSafe() {
         // Should be safe to call even if not started
@@ -118,17 +108,7 @@ private slots:
         
         // Parent will delete child, no manual delete needed
     }
-    
-    // Test polling interval limits
-    void testPollingIntervalLimits() {
-        // Test edge cases - should handle gracefully
-        channel->setPollingInterval(1);      // Very fast (will be clamped to 10ms)
-        channel->setPollingInterval(10000);  // Very slow (at limit)
-        channel->setPollingInterval(0);      // Zero (will be clamped to 10ms)
-        channel->setPollingInterval(50000);  // Too large (will be clamped to 10s)
-        
-        QVERIFY(true);  // No crash = success
-    }
+
 };
 
 QTEST_MAIN(TestKeycardChannel)

@@ -88,6 +88,14 @@ void KeycardChannelPcsc::releaseContext()
     }
 }
 
+void KeycardChannelPcsc::setState(ChannelState state)
+{
+    if (m_state == state) {
+        return;
+    }
+    m_state = state;
+}
+
 QStringList KeycardChannelPcsc::listReaders()
 {
     QStringList readers;
@@ -730,18 +738,6 @@ void KeycardChannelPcsc::disconnect()
     disconnectFromCard();
 }
 
-void KeycardChannelPcsc::setState(ChannelState state)
-{
-    // PC/SC: State transitions are mostly no-ops since we have continuous detection
-    // Just log the state change for debugging
-    qDebug() << "KeycardChannelPcsc: setState() called, transition:" << static_cast<int>(m_state) 
-             << "→" << static_cast<int>(state);
-    m_state = state;
-    
-    // PC/SC continuously detects cards, so state changes don't affect detection behavior
-    // This is different from iOS which needs explicit session management
-}
-
 QByteArray KeycardChannelPcsc::transmit(const QByteArray& apdu)
 {
     // CRITICAL: Serialize APDU transmissions to prevent corruption
@@ -793,14 +789,6 @@ bool KeycardChannelPcsc::isConnected() const
     return m_connected;
 }
 
-void KeycardChannelPcsc::setPollingInterval(int intervalMs)
-{
-    // No-op: Event-driven detection doesn't use polling
-    // This method is kept for interface compatibility
-    qDebug() << "KeycardChannelPcsc: setPollingInterval called but ignored (event-driven detection doesn't poll)";
-    Q_UNUSED(intervalMs);
-}
-
 void KeycardChannelPcsc::forceScan()
 {
     qDebug() << "KeycardChannelPcsc: Force scan requested";
@@ -813,4 +801,3 @@ void KeycardChannelPcsc::forceScan()
 }
 
 } // namespace Keycard
-

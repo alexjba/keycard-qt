@@ -31,22 +31,43 @@ enum class ChannelState {
      * - Android/PC/SC: No change (already detecting)
      */
     WaitingForCard,
+};
+
+/**
+ * @brief Operational state of the channel from the channel's perspective
+ * 
+ * This enum represents the actual operational state of the channel,
+ * independent of the lifecycle state set via setState(). The channel
+ * implementation controls this state based on its actual operations.
+ */
+enum class ChannelOperationalState {
+    /**
+     * @brief Channel is idle, not actively doing anything
+     */
+    Idle,
     
     /**
-     * @brief Card is present and ready for communication
-     * 
-     * - iOS: Keep NFC session active during APDU exchange
-     * - Android/PC/SC: Card detected and connected
+     * @brief Channel is waiting for a keycard to be presented
      */
-    CardPresent,
+    WaitingForKeycard,
     
     /**
-     * @brief Paused for user input (PIN, confirmation, etc.)
-     * 
-     * - iOS: NFC session dismissed to allow keyboard input
-     * - Android/PC/SC: Card still connected, no change
+     * @brief Channel is actively reading/communicating with a keycard
      */
-    UserInput
+    Reading,
+    
+    /**
+     * @brief An error occurred during channel operation
+     */
+    Error,
+    /**
+     * @brief There's no NFC/PCSC HW available
+     */
+    NotSupported,
+    /**
+     * @brief NFC/PCSC HW available, but disabled
+    */
+    NotAvailable
 };
 
 /**
@@ -123,8 +144,6 @@ public:
      * State transitions:
      * - Idle → WaitingForCard: Start looking for card
      * - WaitingForCard → CardPresent: Card detected
-     * - CardPresent → UserInput: Pause for user input (dismiss UI)
-     * - UserInput → WaitingForCard: Resume, wait for card again
      * - Any → Idle: Clean up and stop
      */
     virtual void setState(ChannelState state) = 0;
@@ -136,13 +155,13 @@ public:
     virtual ChannelState state() const = 0;
     
     /**
-     * @brief Set polling interval (if applicable)
-     * @param intervalMs Interval in milliseconds
+     * @brief Get the current operational channel state
+     * @return Current operational state
      * 
-     * Default implementation does nothing (NFC backends don't poll).
-     * PC/SC backend overrides this to control reader polling frequency.
+     * This represents the actual operational state of the channel,
+     * controlled by the channel implementation based on its operations.
      */
-    virtual void setPollingInterval(int intervalMs) { Q_UNUSED(intervalMs); }
+    virtual ChannelOperationalState channelState() const { return ChannelOperationalState::Idle; }
     
     /**
      * @brief Request card at flow startup (iOS-specific)
@@ -157,6 +176,14 @@ public:
      * Default implementation returns true (no action needed).
      */
     virtual bool requestCardAtStartup() { return true; }
+
+    /**
+     * @brief Force immediate re-scan for cards
+     * 
+     * Triggers an immediate re-scan for cards. Useful after operations
+     * that change card state (e.g., initialization, factory reset).
+     */
+    virtual void forceScan() = 0;
 
 signals:
     /**
@@ -186,6 +213,16 @@ signals:
      * @param message Error description
      */
     void error(const QString& message);
+    
+    /**
+     * @brief Emitted when the operational channel state changes
+     * @param state The new operational state
+     * 
+     * This signal is emitted when the channel's operational state changes
+     * based on its actual operations (card detected, reading, errors, etc.).
+     * This is independent of the lifecycle state set via setState().
+     */
+    void channelStateChanged(ChannelOperationalState state);
 };
 
 } // namespace Keycard

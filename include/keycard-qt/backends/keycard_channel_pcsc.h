@@ -46,16 +46,14 @@ public:
     bool isConnected() const override;
     QByteArray transmit(const QByteArray& apdu) override;
     QString backendName() const override { return "PC/SC"; }
-    void setPollingInterval(int intervalMs) override;
     void setState(ChannelState state) override;
     ChannelState state() const override { return m_state; }
 
-public slots:
     /**
      * @brief Force immediate re-scan for cards (used after init/factory reset)
      * Matches status-keycard-go's forceScan mechanism
      */
-    void forceScan();
+    void forceScan() override;
 
 private:
     /**
@@ -127,4 +125,3 @@ private:
 };
 
 } // namespace Keycard
-

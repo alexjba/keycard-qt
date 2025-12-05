@@ -47,10 +47,10 @@ public:
     bool isConnected() const override;
     QByteArray transmit(const QByteArray& apdu) override;
     QString backendName() const override { return "Mock Backend"; }
-    void setPollingInterval(int intervalMs) override { m_pollingInterval = intervalMs; }
     bool requestCardAtStartup() override { return true; } // No-op for mock
     void setState(ChannelState state) override;
     ChannelState state() const override { return m_state; }
+    void forceScan() override;
 
     // ========================================================================
     // Configuration Methods

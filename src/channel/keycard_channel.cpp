@@ -5,26 +5,10 @@
 #include "keycard-qt/backends/keycard_channel_backend.h"
 #include <QDebug>
 
-// Platform detection and backend selection
-#if (defined(Q_OS_MACOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)) && !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
-    // Desktop platforms use PC/SC
-    #define KEYCARD_BACKEND_PCSC
-    #include "keycard-qt/backends/keycard_channel_pcsc.h"
-#elif defined(Q_OS_IOS)
-    // iOS uses Qt NFC
-    #define KEYCARD_BACKEND_QT_NFC
-    #include "keycard-qt/backends/keycard_channel_qt_nfc.h"
-#elif defined(Q_OS_ANDROID)
-    // Android: Choose between direct JNI or Qt NFC
-    #ifdef USE_ANDROID_NFC_BACKEND
-        #define KEYCARD_BACKEND_ANDROID_NFC
-        #include "keycard-qt/backends/keycard_channel_android_nfc.h"
-    #else
-        #define KEYCARD_BACKEND_QT_NFC
-        #include "keycard-qt/backends/keycard_channel_qt_nfc.h"
-    #endif
+#if defined(Q_OS_IOS) || defined(Q_OS_ANDROID)
+    #include "keycard-qt/backends/keycard_channel_unified_qt_nfc.h"
 #else
-    #error "No Keycard backend available for this platform"
+    #include "keycard-qt/backends/keycard_channel_pcsc.h"
 #endif
 
 namespace Keycard {
@@ -66,6 +50,9 @@ KeycardChannel::KeycardChannel(QObject* parent)
     
     connect(m_backend, &KeycardChannelBackend::error,
             this, &KeycardChannel::error);
+    
+    connect(m_backend, &KeycardChannelBackend::channelStateChanged,
+            this, &KeycardChannel::channelStateChanged);
 }
 
 // DI constructor - accepts injected backend
@@ -109,23 +96,20 @@ KeycardChannel::KeycardChannel(KeycardChannelBackend* backend, QObject* parent)
     
     connect(m_backend, &KeycardChannelBackend::error,
             this, &KeycardChannel::error);
+    
+    connect(m_backend, &KeycardChannelBackend::channelStateChanged,
+            this, &KeycardChannel::channelStateChanged);
 }
 
 KeycardChannelBackend* KeycardChannel::createDefaultBackend()
 {
     // Factory: Create appropriate backend based on platform
-#ifdef KEYCARD_BACKEND_PCSC
+#if defined(Q_OS_IOS) || defined(Q_OS_ANDROID)
+    qDebug() << "KeycardChannel: Creating unified Qt NFC backend (All platforms)";
+    return new KeycardChannelUnifiedQtNfc(this);
+#else
     qDebug() << "KeycardChannel: Creating PC/SC backend (Desktop)";
     return new KeycardChannelPcsc(this);
-#elif defined(KEYCARD_BACKEND_QT_NFC)
-    qDebug() << "KeycardChannel: Creating Qt NFC backend (Mobile)";
-    return new KeycardChannelQtNfc(this);
-#elif defined(KEYCARD_BACKEND_ANDROID_NFC)
-    qDebug() << "KeycardChannel: Creating Android NFC backend (Direct JNI)";
-    return new KeycardChannelAndroidNfc(this);
-#else
-    #error "No Keycard backend available for this platform"
-    return nullptr;
 #endif
 }
 
@@ -158,9 +142,7 @@ void KeycardChannel::forceScan()
 {
     if (m_backend) {
         // Try to call forceScan() on the backend if it supports it
-        QMetaObject::invokeMethod(m_backend, "forceScan", Qt::QueuedConnection);
-    } else {
-        qWarning() << "KeycardChannel: No backend available!";
+        m_backend->forceScan();
     }
 }
 
@@ -223,6 +205,14 @@ ChannelState KeycardChannel::state() const
     return ChannelState::Idle;
 }
 
+ChannelOperationalState KeycardChannel::channelState() const
+{
+    if (m_backend) {
+        return m_backend->channelState();
+    }
+    return ChannelOperationalState::Idle;
+}
+
 QByteArray KeycardChannel::transmit(const QByteArray& apdu)
 {
     if (!m_backend) {
@@ -237,15 +227,6 @@ bool KeycardChannel::isConnected() const
         return m_backend->isConnected();
     }
     return false;
-}
-
-void KeycardChannel::setPollingInterval(int intervalMs)
-{
-    if (m_backend) {
-        m_backend->setPollingInterval(intervalMs);
-    } else {
-        qWarning() << "KeycardChannel: No backend available!";
-    }
 }
 
 } // namespace Keycard

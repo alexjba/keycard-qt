@@ -75,10 +75,7 @@ CommandSet::CommandSet(std::shared_ptr<Keycard::KeycardChannel> channel,
     , m_pairingStorage(pairingStorage)
     , m_passwordProvider(passwordProvider)
     , m_secureChannel(new SecureChannel(channel.get()))
-{
-    qDebug() << "CommandSet!: Created with pairing storage:" << (m_pairingStorage ? "yes" : "no")
-             << "password provider:" << (m_passwordProvider ? "yes" : "no");
-    
+{   
     if (!m_channel) {
         qWarning() << "CommandSet: Null channel provided";
         return;
@@ -93,8 +90,6 @@ CommandSet::CommandSet(std::shared_ptr<Keycard::KeycardChannel> channel,
     }
 
     QObject::connect(m_channel.get(), &Keycard::KeycardChannel::targetDetected, this, [this](const QString& uid) {
-        qDebug() << "CommandSet::targetDetected() uid:" << uid;
-        qDebug() << "CommandSet::targetDetected() m_cardInstanceUID:" << m_cardInstanceUID;
         if (uid != m_targetId) {
             qDebug() << "CommandSet::targetDetected(): Card swap detected";
             m_targetId = uid;
@@ -109,7 +104,6 @@ CommandSet::CommandSet(std::shared_ptr<Keycard::KeycardChannel> channel,
 }
 
 CommandSet::~CommandSet() {
-    qDebug() << "CommandSet: Destroyed";
 };
 
 bool CommandSet::checkOK(const APDU::Response& response)
@@ -199,13 +193,13 @@ PairingInfo CommandSet::pair(const QString& pairingPassword)
                          "2. Use Keycard Connect app to clear pairings\n"
                          "3. Factory reset the card (WARNING: erases all data)";
             qWarning() << "========================================";
-            qWarning() << "❌ PAIRING FAILED: No available slots!";
-            qWarning() << "❌ Your Keycard has all pairing slots full.";
+            qWarning() << " PAIRING FAILED: No available slots!";
+            qWarning() << " Your Keycard has all pairing slots full.";
             qWarning() << "========================================";
-            qWarning() << "💡 Solutions:";
-            qWarning() << "💡 1. Check if you have a saved pairing in your pairings file";
-            qWarning() << "💡 2. Download Keycard Connect app and clear old pairings";
-            qWarning() << "💡 3. Factory reset (WARNING: erases all keys!)";
+            qWarning() << " Solutions:";
+            qWarning() << " 1. Check if you have a saved pairing in your pairings file";
+            qWarning() << " 2. Download Keycard Connect app and clear old pairings";
+            qWarning() << " 3. Factory reset (WARNING: erases all keys!)";
             qWarning() << "========================================";
         } else {
             m_lastError = QString("Pair step 1 failed: %1").arg(resp1.errorMessage());
@@ -233,15 +227,15 @@ PairingInfo CommandSet::pair(const QString& pairingPassword)
     if (expectedCryptogram != cardCryptogram) {
         m_lastError = "Invalid card cryptogram - wrong pairing password";
         qWarning() << "========================================";
-        qWarning() << "❌ CommandSet: CRYPTOGRAM MISMATCH!";
-        qWarning() << "❌ This means the pairing password is WRONG!";
+        qWarning() << " CommandSet: CRYPTOGRAM MISMATCH!";
+        qWarning() << " This means the pairing password is WRONG!";
         qWarning() << "========================================";
 
         qWarning() << "Expected cryptogram:" << expectedCryptogram.toHex();
         qWarning() << "Received cryptogram:" << cardCryptogram.toHex();
         qWarning() << "========================================";
-        qWarning() << "💡 TIP: Card may need to be initialized first with KeycardInitialize.init()";
-        qWarning() << "💡 OR: Card was initialized with a different pairing password";
+        qWarning() << " TIP: Card may need to be initialized first with KeycardInitialize.init()";
+        qWarning() << " OR: Card was initialized with a different pairing password";
         qWarning() << "========================================";
         return PairingInfo();
     }
@@ -435,7 +429,7 @@ bool CommandSet::init(const Secrets& secrets)
     
     // After init, we need to SELECT again to get initialized state
     m_appInfo = select(true);
-    // iOS: Cache PIN for auto-reauth after NFC session loss
+    // Cache PIN for auto-reauth after NFC session loss
     m_wasAuthenticated = true;
     m_cachedPIN = secrets.pin.toUtf8();
     
@@ -495,22 +489,21 @@ bool CommandSet::verifyPIN(const QString& pin)
         return false;
     }
     
-    m_cachedStatus.pinRetryCount = -1;
     bool result = checkOK(resp);
     if (result) {
         // iOS: Cache PIN for auto-reauth after NFC session loss
         m_wasAuthenticated = true;
         m_cachedPIN = pin;
-        
-        // Update cached status after PIN verification (matching status-keycard-go)
-        try {
-            m_cachedStatus = getStatus();
-            m_hasCachedStatus = true;
-            qDebug() << "CommandSet: Updated cached status after PIN verification - PIN retries:" 
-                     << m_cachedStatus.pinRetryCount << "PUK retries:" << m_cachedStatus.pukRetryCount;
-        } catch (...) {
-            qWarning() << "CommandSet: Failed to update cached status after PIN verification";
-        }
+    }
+
+    // Update cached status after PIN verification (matching status-keycard-go)
+    try {
+        m_cachedStatus = getStatus();
+        m_hasCachedStatus = true;
+        qDebug() << "CommandSet: Updated cached status after PIN verification - PIN retries:" 
+                    << m_cachedStatus.pinRetryCount << "PUK retries:" << m_cachedStatus.pukRetryCount;
+    } catch (...) {
+        qWarning() << "CommandSet: Failed to update cached status after PIN verification";
     }
     return result;
 }
@@ -966,6 +959,8 @@ bool CommandSet::factoryReset()
         m_appInfo = ApplicationInfo();
         m_pairingInfo = PairingInfo();
         m_cardInstanceUID.clear();
+        m_cachedStatus = Keycard::ApplicationStatus();
+        m_channel->forceScan();
         return true;
     }
 
@@ -1094,7 +1089,7 @@ bool CommandSet::ensurePairing()
         return false;
     }
     
-    qDebug() << "CommandSet: Pairing successful, index:" << m_pairingInfo.index;
+    qDebug() << "CommandSet: Pairing successful";
     
     // Save to storage for future use
     if (m_pairingStorage) {
@@ -1171,8 +1166,18 @@ void CommandSet::handleCardSwap()
     qWarning() << "CommandSet: All state cleared - flow must restart with new card";
 }
 
+void CommandSet::setDefaultWaitTimeout(int timeoutMs)
+{
+    m_defaultWaitTimeout = timeoutMs;
+    qDebug() << "CommandSet: Default wait timeout set to" << timeoutMs << "ms";
+}
+
 bool CommandSet::waitForCard(int timeoutMs)
 {
+    // Use default timeout if not specified
+    if (timeoutMs < 0) {
+        timeoutMs = m_defaultWaitTimeout;
+    }
     qDebug() << "CommandSet::waitForCard() timeout:" << timeoutMs << "ms";
     
     // Check if card is already connected

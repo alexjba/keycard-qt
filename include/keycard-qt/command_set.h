@@ -319,10 +319,37 @@ public:
     /**
      * @brief Wait for card to be present
      * Checks if card is connected, enables card detection if needed, and waits for card
-     * @param timeoutMs Timeout in milliseconds (default: 60 seconds)
+     * @param timeoutMs Timeout in milliseconds (default: uses defaultWaitTimeout)
      * @return true if card detected, false on timeout or error
      */
-    bool waitForCard(int timeoutMs = 60000);
+    bool waitForCard(int timeoutMs = -1);
+    
+    /**
+     * @brief Set default timeout for waitForCard operations
+     * @param timeoutMs Timeout in milliseconds (default: 60000)
+     * Useful for tests to use shorter timeouts
+     */
+    void setDefaultWaitTimeout(int timeoutMs);
+
+    /**
+     * @brief Ensure pairing is available for current card
+     * 
+     * Automatic pairing lifecycle:
+     * 1. Check cached pairing (fast path)
+     * 2. Try to load from storage
+     * 3. If missing, attempt to pair (needs password provider)
+     * 4. Save newly created pairing
+     * 
+     * @return true if pairing is available, false otherwise
+     */
+    bool ensurePairing();
+
+    /**
+     * @brief Ensure secure channel is ready before secure operations
+     * Checks flag and re-establishes if needed
+     * @return true on success
+     */
+    bool ensureSecureChannel();
     
     // Accessors
     ApplicationInfo applicationInfo() const { return m_appInfo; }
@@ -358,13 +385,6 @@ private:
                                 const QByteArray& data = QByteArray());
 
     /**
-     * @brief Ensure secure channel is ready before secure operations
-     * Checks flag and re-establishes if needed (transparent auto-recovery)
-     * @return true on success
-     */
-    bool ensureSecureChannel();
-
-    /**
      * @brief Send APDU command with automatic precondition management
      * @param cmd The APDU command to send
      * @param secure If true, ensures secure channel is open before sending
@@ -377,19 +397,6 @@ private:
      * - Transmits the command via appropriate channel
      */
     APDU::Response send(const APDU::Command& cmd, bool secure = true);
-    
-    /**
-     * @brief Ensure pairing is available for current card
-     * 
-     * Automatic pairing lifecycle:
-     * 1. Check cached pairing (fast path)
-     * 2. Try to load from storage
-     * 3. If missing, attempt to pair (needs password provider)
-     * 4. Save newly created pairing
-     * 
-     * @return true if pairing is available, false otherwise
-     */
-    bool ensurePairing();
     
     /**
      * @brief Internal implementation of waitForCard (must be called from correct thread)
@@ -418,6 +425,9 @@ private:
     bool m_wasAuthenticated = false;  // True if verifyPIN succeeded in this flow
     QString m_cachedPIN;              // Cached PIN for auto-reauth after NFC session loss
     bool m_needsSecureChannelReestablishment = false;  // Flag: secure channel must be re-opened before next command
+    
+    // Default timeout for waitForCard operations (can be configured for tests)
+    int m_defaultWaitTimeout = 60000;  // 60 seconds default
 };
 
 } // namespace Keycard

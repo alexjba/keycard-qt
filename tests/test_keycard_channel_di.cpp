@@ -305,26 +305,6 @@ private slots:
     }
 
     // ========================================================================
-    // Polling Interval Tests
-    // ========================================================================
-
-    void testSetPollingInterval() {
-        auto* mock = new MockBackend();
-        KeycardChannel channel(mock);
-        
-        // Set polling interval
-        channel.setPollingInterval(250);
-        
-        // Mock should have received it
-        QCOMPARE(mock->getPollingInterval(), 250);
-        
-        // Try different values
-        channel.setPollingInterval(100);
-        QCOMPARE(mock->getPollingInterval(), 100);
-        
-    }
-
-    // ========================================================================
     // Backend Reset Tests
     // ========================================================================
 

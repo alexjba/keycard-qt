@@ -158,6 +158,15 @@ public:
      */
     ChannelState state() const;
     
+    /**
+     * @brief Get the current operational channel state
+     * @return Current operational state
+     * 
+     * This represents the actual operational state of the channel,
+     * controlled by the channel implementation based on its operations.
+     */
+    ChannelOperationalState channelState() const;
+    
     // IChannel interface implementation
     /**
      * @brief Transmit APDU command to Keycard
@@ -175,19 +184,7 @@ public:
      * @return true if connected and ready for communication
      */
     bool isConnected() const override;
-    
-    /**
-     * @brief Set polling interval for card detection (PC/SC only)
-     * @param intervalMs Polling interval in milliseconds
-     * 
-     * Controls how frequently the PC/SC backend checks for card readers.
-     * - Lower values (e.g., 50ms): Better responsiveness, more CPU usage
-     * - Higher values (e.g., 500ms): Lower CPU usage, slower detection
-     * - Default: 100ms
-     * 
-     * Note: Only affects PC/SC backend. NFC backends don't use polling.
-     */
-    void setPollingInterval(int intervalMs);
+
     
 signals:
     /**
@@ -223,6 +220,16 @@ signals:
      * and platform-specific issues (e.g., NFC not supported).
      */
     void error(const QString& message);
+    
+    /**
+     * @brief Emitted when the operational channel state changes
+     * @param state The new operational state
+     * 
+     * This signal is emitted when the channel's operational state changes
+     * based on its actual operations (card detected, reading, errors, etc.).
+     * This is independent of the lifecycle state set via setState().
+     */
+    void channelStateChanged(ChannelOperationalState state);
     
 private:
     /**
