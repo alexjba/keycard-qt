@@ -7,22 +7,20 @@ Cross-platform C++/Qt library for Keycard APDU API - a 1:1 replacement for [keyc
 ## Features
 
 - **Cross-platform**: Linux, macOS, Windows (PC/SC), Android, iOS (NFC)
-- **Unified API**: Single codebase using Qt NFC for all platforms
+- **Unified API**: Single codebase with automatic backend selection (PC/SC for desktop, Qt NFC for mobile)
 - **Complete APDU support**: All Keycard commands implemented
 - **Secure channel**: ECDH key exchange + AES-CBC encryption
-- **Thread-safe**: Safe for concurrent access
-- **Well-tested**: >50% code coverage
-- **Self-contained**: Android support includes automatic JAR build (no manual file copying)
+- **Backend architecture**: Clean separation with pluggable backends for testing and extension
 
 ## Supported Platforms
 
-| Platform | Communication | Status |
-|----------|---------------|--------|
-| Linux    | PC/SC | 🚧 In Development |
-| macOS    | PC/SC | 🚧 In Development |
-| Windows  | PC/SC | 🚧 In Development |
-| Android  | NFC (IsoDep via JNI) | 🚧 In Development |
-| iOS      | NFC (via Qt NFC + CoreNFC) | ✅ Configured (Needs Testing) |
+| Platform | Backend | Status |
+|----------|---------|--------|
+| Linux    | PC/SC | Developed - Pending Testing |
+| macOS    | PC/SC | Developed - Pending Testing |
+| Windows  | PC/SC | Developed - Pending Testing |
+| Android  | Unified Qt NFC | Developed - Pending Testing |
+| iOS      | Unified Qt NFC | Developed - Pending Testing |
 
 ## Requirements
 
@@ -57,13 +55,10 @@ cmake --install . --prefix /usr/local
 
 - `BUILD_TESTING=ON|OFF` - Build unit tests (default: ON)
 - `BUILD_EXAMPLES=ON|OFF` - Build example applications (default: OFF)
-- `BUILD_ANDROID_NFC_JAR=ON|OFF` - Build Android NFC helper JAR (default: ON for Android)
-- `PUBLISH_ANDROID_NFC_JAR=ON|OFF` - Auto-publish JAR to Maven Local (default: ON for Android)
-- `USE_ANDROID_NFC_BACKEND=ON|OFF` - Use direct Android NFC backend (default: ON)
 
 ### Android Build
 
-For Android builds using the Android NFC backend (default), the library **automatically builds and publishes** a self-contained JAR to Maven Local:
+For Android builds, the library uses the **Unified Qt NFC backend** which is built as part of the native library:
 
 ```bash
 mkdir build && cd build
@@ -74,25 +69,7 @@ cmake .. \
 make -j10
 ```
 
-**What happens automatically (when using Android NFC backend):**
-- Builds native library: `libkeycard-qt.so`
-- Builds Android NFC JAR: `android/build/libs/keycard-qt-nfc-0.1.0.jar`
-- **Publishes to Maven Local:** `~/.m2/repository/im/status/keycard/keycard-qt-nfc/0.1.0/`
-
-**Note:** JAR is only built when `USE_ANDROID_NFC_BACKEND=ON` (default), as it contains Java helper classes needed for the Android NFC backend. If using Qt NFC backend (`-DUSE_ANDROID_NFC_BACKEND=OFF`), the JAR isn't needed and won't be built.
-
-**Then in your Android app:**
-```gradle
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    implementation 'im.status.keycard:keycard-qt-nfc:0.1.0'
-}
-```
-
-That's it! No manual JAR copying needed. See [Auto Maven Publish Guide](AUTO_MAVEN_PUBLISH_GUIDE.md) for details.
+This builds the native library `libkeycard-qt.so` with Qt NFC support for Android.
 
 ## Quick Start
 
@@ -147,24 +124,26 @@ auto keys = cmdSet->exportKeyExtended(true, false,
 └──────────────┬──────────────────────┘
                │
 ┌──────────────▼──────────────────────┐
-│ KeycardChannel (Qt NFC)             │
-│ • Unified PC/SC + NFC support       │
-│ • Works on all 5 platforms!         │
-└─────────────────────────────────────┘
+│ KeycardChannel                      │
+│ • Platform-adaptive API             │
+│ • Automatic backend selection       │
+└──────────────┬──────────────────────┘
+               │
+        ┌──────┴──────┐
+        │             │
+┌───────▼──────┐ ┌────▼────────────────┐
+│ PC/SC        │ │ Unified Qt NFC      │
+│ Backend      │ │ Backend             │
+│              │ │                     │
+│ • Windows    │ │ • iOS               │
+│ • macOS      │ │ • Android           │
+│ • Linux      │ │                     │
+└──────────────┘ └─────────────────────┘
 ```
 
 ## Documentation
 
 - [API Reference](docs/API.md)
-- [**iOS NFC Quick Start**](docs/IOS_QUICK_START.md) - ⭐ **iOS NFC setup in 5 minutes!**
-- [iOS NFC Setup Guide](docs/IOS_NFC_SETUP.md) - Complete iOS NFC documentation
-- [**Auto Maven Publish Guide**](docs/AUTO_MAVEN_PUBLISH_GUIDE.md) - Android JAR auto-publishing
-- [Gradle Dependency Usage](docs/GRADLE_DEPENDENCY_USAGE.md) - Complete Gradle guide
-- [Gradle Quick Start](docs/GRADLE_DEPENDENCY_QUICKSTART.md) - TL;DR version
-- [Status Desktop Gradle Integration](docs/STATUS_DESKTOP_GRADLE_INTEGRATION.md) - Integration guide
-- [Android JAR Usage](docs/ANDROID_JAR_USAGE.md) - Manual JAR integration (legacy)
-- [Status Desktop Integration](docs/STATUS_DESKTOP_INTEGRATION.md) - Manual approach (legacy)
-- [Porting Guide](docs/PORTING_GUIDE.md)
 - [Qt NFC Integration](https://doc.qt.io/qt-6/qtnfc-pcsc.html)
 
 ## Testing
