@@ -104,7 +104,7 @@ void KeycardChannelUnifiedQtNfc::forceScan()
 
 bool KeycardChannelUnifiedQtNfc::isConnected() const
 {
-    return m_target != nullptr;
+    return m_detectionActive && m_target != nullptr;
 }
 
 void KeycardChannelUnifiedQtNfc::onTargetDetected(QNearFieldTarget* target)

@@ -1205,12 +1205,6 @@ bool CommandSet::waitForCard(int timeoutMs)
             loop.quit();
         });
 
-    QMetaObject::Connection lostConnection = QObject::connect(
-        m_channel.get(), &Keycard::KeycardChannel::targetLost,
-        [&loop]() {
-            qDebug() << "CommandSet::waitForCard(): Card lost";
-            loop.quit();
-        });
     
     // Setup timeout
     QTimer timer;
@@ -1232,7 +1226,6 @@ bool CommandSet::waitForCard(int timeoutMs)
     if (!success) {
         qWarning() << "CommandSet::waitForCard(): Failed to set channel state to WaitingForCard";
         QObject::disconnect(cardConnection);
-        QObject::disconnect(lostConnection);
         QObject::disconnect(errorConnection);
         return false;
     }
@@ -1242,7 +1235,6 @@ bool CommandSet::waitForCard(int timeoutMs)
     
     // Clean up connections
     QObject::disconnect(cardConnection);
-    QObject::disconnect(lostConnection);
     QObject::disconnect(errorConnection);
     
     if (cardDetected) {
